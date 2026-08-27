@@ -3,9 +3,17 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleIdentifier</key>
-    <string>org.opensource.asctl</string>
+    <string>io.github.yourchocomate.asctl</string>
     <key>CFBundleName</key>
     <string>asctl</string>
+    <key>CFBundleExecutable</key>
+    <string>asctl</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>NSHumanReadableCopyright</key>
+    <string>Copyright © 2026 Habibur Rahman (yourchocomate). MIT licensed.</string>
     <!-- CoreBluetooth aborts the process (SIGABRT) unless a usage description
          is present. A bare CLI binary has no Info.plist, so this one is linked
          directly into the __TEXT,__info_plist section. -->

@@ -325,6 +325,10 @@ Reverse engineering for interoperability — producing software that works with
 hardware you own. No vendor code is copied, redistributed, or included in this
 repository; it contains only original code and a description of an interface.
 
+## Author
+
+Habibur Rahman — [@yourchocomate](https://github.com/yourchocomate)
+
 ## License
 
-MIT
+[MIT](LICENSE) © 2026 Habibur Rahman

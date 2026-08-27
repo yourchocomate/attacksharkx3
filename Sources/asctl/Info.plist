@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>org.opensource.asctl</string>
+    <key>CFBundleName</key>
+    <string>asctl</string>
+    <!-- CoreBluetooth aborts the process (SIGABRT) unless a usage description
+         is present. A bare CLI binary has no Info.plist, so this one is linked
+         directly into the __TEXT,__info_plist section. -->
+    <key>NSBluetoothAlwaysUsageDescription</key>
+    <string>asctl configures your Attack Shark mouse over Bluetooth GATT.</string>
+</dict>
+</plist>

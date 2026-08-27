@@ -9,9 +9,12 @@ IOKit and CoreBluetooth.
 
 ```bash
 swift build -c release
-.build/release/asctl list
+.build/release/asctl gui                 # graphical interface
 .build/release/asctl dpi 800,1600,3200 --active 2
 ```
+
+There are two front ends over the same protocol code — a GUI that mirrors the
+vendor's layout, and a CLI. Neither is a wrapper around the other.
 
 ## Why this can work
 
@@ -89,26 +92,60 @@ Always write, then *measure*.
 
 ## Install
 
-Requires macOS 11+ and the Xcode command line tools.
+Requires macOS 12+ and the Xcode command line tools.
 
 ```bash
 swift build -c release
 cp .build/release/asctl /usr/local/bin/     # optional
 ```
 
+### The app bundle
+
+`asctl gui` works from a terminal, but macOS attributes privacy permissions to
+the requesting process — so launched that way, Input Monitoring and Bluetooth
+are granted to your *terminal*. Building a bundle gives the app its own identity
+and its own entries in System Settings:
+
+```bash
+Scripts/make-app.sh
+open build/asctl.app
+```
+
 ### Permissions
 
 | What you're doing | Grant |
 |---|---|
-| HID configuration over the receiver or cable | **Input Monitoring** for your terminal |
-| Anything with `--ble`, or `ble *` | **Bluetooth** for your terminal |
-| `scroll` | **Accessibility** for your terminal |
+| HID configuration over the receiver or cable | **Input Monitoring** |
+| Anything with `--ble`, `ble *`, or the GUI's battery/Bluetooth tools | **Bluetooth** |
+| `scroll` | **Accessibility** |
+
+Granted to whichever process asks: your terminal for the CLI, or `asctl.app` if
+you built the bundle.
 
 System Settings ▸ Privacy & Security. Bluetooth in particular is per-process
 TCC: a shell without it is killed with `SIGABRT` and no error message, so run
 BLE commands from an interactive terminal you have granted access.
 
 ---
+
+## The GUI
+
+`asctl gui` opens a window laid out like the vendor's: buttons and profile down
+the left, the mouse in the middle, a collapsible settings accordion on the
+right. What it adds:
+
+| | Vendor | asctl |
+|---|---|---|
+| Transport | auto-detected, Bluetooth loses features | pick 2.4 GHz/USB or Bluetooth; the whole feature set on both |
+| Feedback | none — it shows what it *believes* it set | every byte sent and every device acknowledgement, live |
+| Dry run | no | preview the exact bytes without writing |
+| DPI stage colour | 16 preset swatches | full RGB per stage |
+| Sensor toggles | hidden on Bluetooth | always reachable |
+| Bluetooth | no battery, no recovery | battery level, and a one-click controller cycle for the dead-cursor fault |
+
+The window will not let you write a button map with no left click, and it warns
+on the mode-switch entries — both are mistakes that cost real recovery work
+here.
 
 ## Usage
 
@@ -304,7 +341,15 @@ implemented here" from "implemented and I sent it wrong".
 ## Layout
 
 ```
+Scripts/make-app.sh      Wraps the binary in asctl.app
 Sources/asctl/
+  GUI/                   SwiftUI interface (asctl gui)
+    MainView.swift         Three-column window, mirroring the vendor layout
+    AppState.swift         Editable configuration + apply logic
+    MouseDiagram.swift     Drawn mouse with per-button callouts
+    Sections.swift         Accordion, sliders, DPI rows, log pane
+    Transport.swift        Sending over HID or GATT with a log
+    GUIApp.swift           NSApplication bootstrap
   HID.swift              IOKit device discovery and feature-report I/O
   BLE.swift              CoreBluetooth GATT transport
   Protocol.swift         Report builders, checksum, action tables

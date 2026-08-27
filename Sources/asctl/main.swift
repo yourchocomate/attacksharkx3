@@ -14,6 +14,7 @@ USAGE
   asctl <command> [options]
 
 COMMANDS
+  gui                      Open the graphical interface
   list                     List Attack Shark HID interfaces (--all for every HID device)
   descriptor               Dump and decode the HID report descriptor
   probe                    Read-only sweep of feature reports (safe; never writes)
@@ -1464,6 +1465,7 @@ case "set": commandSet(options)
 case "send": commandSend(options)
 case "pollrate": commandPollRate(options)
 case "dpi": commandDpi(options)
+case "gui": runGUI()
 case "light": commandLight(options)
 case "light-probe": LightProbe.run(options)
 case "power": commandPower(options)

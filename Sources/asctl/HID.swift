@@ -153,7 +153,7 @@ enum HID {
 
     /// Pick the interface that the Windows software talks to.
     ///
-    /// X3.exe drives configuration over HID *feature* reports, so we want the
+    /// The vendor software drives configuration over HID *feature* reports, so we want the
     /// collection that actually exposes them, preferring a vendor-defined
     /// collection over the plain mouse one.
     static func selectConfigInterface(_ candidates: [HIDDeviceRef]) -> HIDDeviceRef? {

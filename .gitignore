@@ -4,22 +4,8 @@
 *.o
 *.dSYM/
 
-# Python venv used for the disassembly tooling
+# Python venvs
 .venv/
 
 # macOS
 .DS_Store
-
-# ---------------------------------------------------------------------------
-# Vendor material and everything derived from it. Not redistributable, and not
-# needed to build or use asctl.
-#
-# To reproduce the analysis, supply your own copy of the vendor installer:
-#   innoextract "ATTACK SHARK X3 SOFT.exe" -d research/extracted
-#   r2 -q -c 'aaa; pdf @ fcn.00413ca0' research/extracted/app/X3.exe
-# ---------------------------------------------------------------------------
-research/
-
-# Local development notes. Kept out of the repository by choice — see README.
-# NOT REGENERABLE. Back this up somewhere.
-docs/PROTOCOL.md

@@ -1,10 +1,9 @@
 import Foundation
 
-/// Device identities recovered from `X3.exe`.
+/// Device identities recovered from the vendor software.
 ///
-/// The constructor of `CMS_1_Page` (0x004080a3) hands two VID/PID pairs to the
-/// two `hiddriver_*.dll` instances, and a separate presence probe at 0x0040f030
-/// calls `hid_enumerate(0x045E, 0x0040)`.
+/// The vendor software hands two VID/PID pairs to its two HID wrapper
+/// instances, and probes separately for a third identity over Bluetooth.
 enum KnownDevices {
     struct Identity {
         let vendorID: Int
@@ -13,17 +12,16 @@ enum KnownDevices {
     }
 
     /// 0x1D57 is the dongle's VID. The two PIDs correspond to the two driver
-    /// instances the Windows app loads (`hiddriver_1.dll` → 0xFA60,
-    /// `hiddriver_2.dll` → 0xFA61).
+    /// wrapper instances the Windows app loads: the first takes 0xFA60, the
+    /// second 0xFA61.
     static let dongle = [
         Identity(vendorID: 0x1D57, productID: 0xFA60, label: "X3 2.4GHz receiver (driver 1)"),
         Identity(vendorID: 0x1D57, productID: 0xFA61, label: "X3 2.4GHz receiver (driver 2)"),
     ]
 
     /// The Bluetooth identity — **confirmed on hardware**: it enumerates as
-    /// `Bluetooth Low Energy` with the product string `X3-5.2 Mouse`. This is
-    /// the same VID/PID the binary probes with `hid_enumerate(0x045E, 0x0040)`
-    /// at 0x0040f030.
+    /// `Bluetooth Low Energy` with the product string `X3-5.2 Mouse`, and it is
+    /// the same VID/PID the vendor software probes for.
     ///
     /// Note it is Microsoft's VID with the generic "Wheel Mouse Optical" PID,
     /// which the X3 clones — so a genuine Microsoft mouse would also match.
@@ -31,7 +29,7 @@ enum KnownDevices {
     /// Over Bluetooth the mouse exposes a maximum feature report size of **one
     /// byte**, so configuration cannot go through HID feature reports on this
     /// path — but it is *not* unconfigurable. The same reports work over GATT
-    /// (`--ble`, §20): write to FEE3, acknowledgements arrive on FEE4.
+    /// with `--ble`: write to FEE3, acknowledgements arrive on FEE4.
     static let bluetooth = [
         Identity(
             vendorID: 0x045E, productID: 0x0040,
@@ -53,7 +51,7 @@ enum KnownDevices {
     }
 }
 
-/// Report framing recovered from `X3.exe`.
+/// Report framing recovered from the vendor software.
 ///
 /// Every configuration exchange is a HID **feature** report. The logical buffer
 /// the application builds has a three-byte header:
@@ -63,13 +61,13 @@ enum KnownDevices {
 ///     byte 2      command / profile / index
 ///     bytes 3…    payload
 ///
-/// The length byte is not a guess: at 0x00413d6a the app writes the header
+/// The length byte is not a guess: the app writes the header
 /// `0C 0A 01 FE` and then passes literal length `10` (`0x0A`) to the sender, and
 /// the device's own report descriptor independently reports report 0x08 as 59
 /// bytes against a `0x3B` header byte, and report 0x09 as 64 against `0x40`.
 ///
 /// When a logical buffer is longer than one report, the wireless path in
-/// `fcn.00413570` fragments it into report-0x09 packets that carry a fourth
+/// the sender fragments it into report-0x09 packets that carry a fourth
 /// header byte:
 ///
 ///     byte 0      0x09
@@ -78,7 +76,7 @@ enum KnownDevices {
 ///     byte 3      chunk sequence, 0…2
 ///     bytes 4-63  60-byte slice of the payload
 ///
-/// A 131-byte macro upload (`09 83 <index> …`, 0x00414385) therefore becomes
+/// A 131-byte macro upload (`09 83 <index> …`) therefore becomes
 /// 60 + 60 + 8 payload bytes across three packets, the last one tagged `0x0C`
 /// = 4 header + 8 payload. The wired path skips fragmentation entirely and
 /// hands the logical buffer straight to `HidD_SetFeature`.
@@ -106,7 +104,7 @@ enum X3Report {
         .init(reportID: 0x04, totalLength: 56, purpose: "mouse attributes / feature toggles", confirmed: false),
         .init(reportID: 0x05, totalLength: 15, purpose: "unknown", confirmed: false),
         .init(reportID: 0x06, totalLength: 9, purpose: "unknown", confirmed: false),
-        .init(reportID: 0x08, totalLength: 59, purpose: "settings block (built at 0x00414630)", confirmed: false),
+        .init(reportID: 0x08, totalLength: 59, purpose: "settings block", confirmed: false),
         .init(reportID: 0x09, totalLength: 64, purpose: "config channel / chunked transfers", confirmed: true),
         .init(reportID: 0x0C, totalLength: 10, purpose: "short command, sent first in the apply sequence", confirmed: false),
         .init(reportID: 0xA0, totalLength: 8, purpose: "status — readable without a preceding write", confirmed: true),
@@ -127,13 +125,13 @@ enum X3Report {
     /// first) immediately after the payload, with the remainder of the declared
     /// length left as zero padding.
     ///
-    /// Verified against two independent implementations in the binary: the
-    /// scalar version for report 0x05 (0x00413e47–0x00413e88, summing bytes
+    /// Verified against two independent implementations in the vendor software: the
+    /// scalar version for report 0x05 (summing bytes
     /// 3…10 into bytes 11–12) and the SSE version for report 0x04
-    /// (0x00414280–0x00414310, summing bytes 3…49 into bytes 50–51).
+    /// (summing bytes 3…49 into bytes 50–51).
     ///
     /// Note report 0x06 does *not* use this: it validates its single payload
-    /// byte with a one's complement instead (0x00413ee9).
+    /// byte with a one's complement instead.
     static func checksum(payload: ArraySlice<UInt8>) -> (high: UInt8, low: UInt8) {
         let sum = payload.reduce(UInt16(0)) { $0 &+ UInt16($1) }
         return (high: UInt8(truncatingIfNeeded: sum >> 8), low: UInt8(truncatingIfNeeded: sum))
@@ -188,16 +186,15 @@ enum X3Report {
     }
 }
 
-/// Polling rate — report 0x06, decoded in full from `fcn.00413ca0` at
-/// 0x00413eac–0x00413efd.
+/// Polling rate — report 0x06, decoded in full from the vendor software.
 ///
 /// The wire value is a divider against 1000 Hz, and byte 4 is its one's
 /// complement. The UI's four presets (Power Saving / Office / Gaming /
-/// E-sports, from `res/lan.xml`) map to indices 0…3 and thence to 8/4/2/1.
+/// E-sports) map to indices 0…3 and thence to dividers 8/4/2/1.
 enum PollingRate {
     static let supported = [125, 250, 500, 1000]
 
-    /// The preamble `X3.exe` sends at the top of every apply (0x00413d6a).
+    /// The preamble the vendor software sends at the top of every apply.
     ///
     /// It is not optional. Confirmed on hardware: sent on its own, a polling
     /// rate write is acknowledged at the USB level and then silently ignored.
@@ -280,38 +277,37 @@ enum Hex {
     }
 }
 
-/// DPI — report `0x04`, built by `fcn.00413fe0` (0x0041400c–0x00414316).
+/// DPI — report `0x04`.
 ///
 /// This one report carries the whole DPI block *and* four sensor toggles *and*
 /// the per-stage LED colours. There is no way to read the current values first
-/// (see PROTOCOL.md §10), so writing it necessarily replaces all of them.
+/// — the protocol is write-only — so writing it necessarily replaces all of them.
 ///
 /// Layout, 56 bytes:
 ///
 ///     0      0x04                report ID
 ///     1      0x38 (56)           declared length
 ///     2      0x01                command
-///     3      toggle  (+0x8b4)    2-option
-///     4      toggle  (+0x940)    2-option
+///     3      lift-off distance   2-option
+///     4      ripple control      2-option
 ///     5      enabled-stage bitmask, one bit per stage (`bts eax, 0…7`)
-///     6      toggle  (+0x944)    2-option
-///     7      toggle  (+0x948)    2-option
+///     6      angle snap          2-option
+///     7      motion sync         2-option
 ///     8–15   DPI low  bytes, stages 0…7
 ///     16–23  DPI high bytes, stages 0…7
-///     24     active stage + 1    (+0x934, `inc al`)
+///     24     active stage + 1
 ///     25–48  8 × RGB triplet, per-stage colour
 ///     49     0x01
 ///     50–51  checksum, high then low
 ///     52–55  zero padding
 ///
-/// Bytes 3/4/6/7 are each an index into a two-entry control array
-/// (0x0040f53d–0x0040f5a9). The arrays are populated at 0x0040eb3e–0x0040ec8c
-/// from the control-name format strings, which names each one exactly:
+/// Bytes 3/4/6/7 are each a two-valued toggle. The naming is not guessed — the
+/// vendor software labels each one explicitly:
 ///
-///     byte 3  page +0x3b0  ms_1_option_lift_of_distance_%d  0 = 1mm, 1 = 2mm
-///     byte 4  page +0x3b8  ms_1_option_ripple_control_%d    0 = off, 1 = on
-///     byte 6  page +0x3c0  ms_1_option_angle_snap_%d        0 = off, 1 = on
-///     byte 7  page +0x3c8  ms_1_option_motion_sync_%d       0 = off, 1 = on
+///     byte 3  lift-off distance   0 = 1 mm, 1 = 2 mm
+///     byte 4  ripple control      0 = off,  1 = on
+///     byte 6  angle snap          0 = off,  1 = on
+///     byte 7  motion sync         0 = off,  1 = on
 ///
 /// Note the unusual DPI encoding: each stage is stored as **`value − 1`** as a
 /// 16-bit quantity, split across two separate byte *planes* — all eight low
@@ -351,11 +347,10 @@ enum DpiReport {
 
     /// DPI is stored in **units of 50**, and then decremented.
     ///
-    /// Settled from the binary, not guessed: the UI divides a typed DPI by 50
-    /// before storing it (`0x51EB851F` / `sar edx, 4` at 0x00411965 — the
+    /// Settled from the vendor software, not guessed: the UI divides a typed DPI by 50
+    /// before storing it (`0x51EB851F` / `sar edx, 4` — the
     /// standard divide-by-50 sequence) and multiplies by 50 to display it
-    /// (`imul eax, edi, 0x32` at 0x004117c7 and 0x00411995). The report builder
-    /// then subtracts one (`dec eax`, 0x004140c5).
+    /// (`imul eax, edi, 0x32`). The report builder then subtracts one.
     ///
     ///     wire = (dpi / 50) - 1        dpi = (wire + 1) * 50
     ///
@@ -427,14 +422,11 @@ enum DpiReport {
     }
 }
 
-/// Lighting — report `0x05`, built inline in `fcn.00413ca0` at
-/// 0x00413db1–0x00413e91.
+/// Lighting — report `0x05`, built inline by the vendor software.
 ///
-/// Field names are taken from the UI control bindings, not guessed:
-/// the refresh block at 0x0040f424–0x0040f4c6 feeds `+0x94c` into
-/// `ms_1_combo_light`, `+0x924` into `ms_1_slider_brightness`, `+0x928` into
-/// `ms_1_slider_breathspeed`, and composes `+0x95c/d/e` into the colour
-/// button's background as 0xRRGGBB.
+/// Field names are taken from the vendor's own UI bindings, not guessed: each
+/// stored value is wired to a named control — mode, brightness, speed — and
+/// three consecutive bytes are composed into a colour swatch as 0xRRGGBB.
 ///
 /// Layout, 15 bytes:
 ///
@@ -443,12 +435,12 @@ enum DpiReport {
 ///     2      0x01
 ///     3      mode << 4
 ///     4      (0x92c & 0xF0) | (9 - speed)
-///     5      ((0x92c & 0x0F) << 4) | (mode is static ? brightness : 8)
+///     5      (deep sleep low nibble << 4) | (mode is static ? brightness : 8)
 ///     6      R
 ///     7      G
 ///     8      B
-///     9      settings +0x930   (unidentified)
-///     10     settings +0x958   (unidentified)
+///     9      sleep time, minutes
+///     10     key response time, ms
 ///     11–12  checksum, high then low (sum of bytes 3…10)
 ///     13–14  zero padding
 ///
@@ -458,10 +450,10 @@ enum LightReport {
     static let reportID: UInt8 = 0x05
     static let totalLength = 15
 
-    /// Mode indices are 0-based, matching `ms_1_lightmode1…12` in `res/lan.xml`.
+    /// Mode indices are 0-based, matching the vendor's twelve-entry mode list.
     ///
     /// The builder branches on `mode == 1 || mode == 9` to decide whether the
-    /// brightness slider reaches the wire (0x00413e02). Under 0-based indexing
+    /// brightness slider reaches the wire. Under 0-based indexing
     /// those are exactly Static and Static Mixed Colour — the two non-animated
     /// modes — which is what makes 0-based the right reading.
     enum Mode: UInt8, CaseIterable {
@@ -478,12 +470,15 @@ enum LightReport {
         case marquee = 10
         case marquee2 = 11
 
-        /// `ms_1_page.xml` marks list elements 8-12 `visible="false"` on
-        /// `ms_1_combo_light`. Only the first seven modes are selectable on this
-        /// model — the rest are the vendor's shared list for other products.
+        /// The vendor's live mode list hides entries 8-12, so only the first
+        /// seven are selectable on this model — the rest belong to other
+        /// products sharing the same implementation.
         ///
-        /// The Bluetooth combo (`ms_1_combo_light_ble`) is shorter still: six
-        /// entries, 0…5. Neon is the first mode Bluetooth cannot select.
+        /// The Bluetooth list is shorter still: six entries, 0…5. Neon is the
+        /// first mode Bluetooth cannot select.
+        ///
+        /// Moot on the X3, which has no user-controllable lighting at all, but
+        /// correct for models that do.
         var availableOn24GHz: Bool { rawValue <= 6 }
         var availableOnBluetooth: Bool { rawValue <= 5 }
 
@@ -521,41 +516,31 @@ enum LightReport {
     /// Report 0x05 is a *mixed* settings report: lighting **and** power
     /// management **and** key debounce travel together.
     ///
-    /// Beware the control names, which are misleading — the labels the user
-    /// actually sees are the truth:
+    /// Beware the vendor's internal names for these three — they contradict
+    /// the labels its own UI displays, and the labels are the truth:
     ///
-    /// | Settings | Control name | Label shown | Range |
-    /// |---|---|---|---|
-    /// | `+0x930` | `ms_1_slider_light_off` | **"Sleep Time:"** (`sleep_timer_1_text`, 0x0040fe7b) | 1-60 min |
-    /// | `+0x92c` | `ms_1_slider_sleep_timer` | **"Deep Sleep Time:"** (`sleep_timer_3_text`, 0x0040fcfb) | 1-60 min |
-    /// | `+0x958` | `ms_1_slider_key_debounce` | "Key Response Time" | 2-25 ms |
-    ///
-    /// Ranges come from `res/MS/MS_1/ms_1_page.xml`; slider values are stored
-    /// raw with no scaling (0x004116c8, 0x004116ed).
+    /// | Byte | Setting | Range |
+    /// |---|---|---|
+    /// | 9 | sleep time | 1-60 min |
+    /// | 4/5 | deep sleep time | 1-60 min |
+    /// | 10 | key response time (debounce) | 2-25 ms |
     ///
     /// Deep sleep is split across two bytes: its high nibble into byte 4 and
     /// its low nibble into byte 5's high nibble.
     ///
-    /// Ranges come from `res/MS/MS_1/ms_1_page.xml` — **not** from
-    /// `ms_1_lightpage.xml`, which is a second, unused layout for the same
-    /// feature. The binary settles which is live: it binds `ms_1_combo_light`
-    /// and `ms_1_slider_brightness` (0x0040e94c, 0x0040e97f), the names in
-    /// `ms_1_page.xml`. `ms_1_lightpage.xml` uses different names for every
-    /// control and nothing looks them up.
+    /// | Field | Range |
+    /// |---|---|
+    /// | brightness | 1…8 |
+    /// | speed | **4…8** |
     ///
-    /// | Slider | Settings | Range |
-    /// |---|---|---|
-    /// | `ms_1_slider_brightness` | `+0x924` | 1…8 |
-    /// | `ms_1_slider_breathspeed` | `+0x928` | **4…8** |
-    ///
-    /// Slider values reach the settings blob unscaled (0x0040f478, 0x0040f48c).
+    /// Slider values reach the wire unscaled.
     /// Speed is inverted on the wire as `9 - speed`, so 4…8 becomes 5…1 in byte
     /// 4's low nibble — it never reaches 0, and never collides with the deep
     /// sleep nibble above it.
     ///
     /// `modeByteOverride` replaces byte 3 outright. It exists for `light-probe`,
     /// which tests alternative encodings of the mode field; normal callers leave
-    /// it nil and get the encoding the vendor binary uses.
+    /// it nil and get the encoding the vendor software uses.
     static func build(
         mode: Mode,
         red: UInt8 = 255, green: UInt8 = 0, blue: UInt8 = 0,
@@ -593,7 +578,7 @@ enum LightReport {
 
 /// Status events — input report `0x03` on the 2.4GHz config interface.
 ///
-/// `hiddriver.dll` runs a reader thread (`fcn.10001a70`) that does a blocking
+/// The vendor's HID wrapper runs a reader thread that does a blocking
 /// `ReadFile` on the HID device and turns each report into a Windows message
 /// (0x10001b37–0x10001b8f):
 ///
@@ -602,7 +587,7 @@ enum LightReport {
 ///     lParam = (buf[4] << 8) | buf[3];   // value
 ///     PostMessageA(hWnd, ButtonMsg, wParam, lParam);
 ///
-/// `X3.exe` then dispatches on the code in `fcn.004132d0`.
+/// The vendor software then dispatches on the event code.
 ///
 /// The frame layout is **confirmed on hardware** against two event types: a DPI
 /// stage change arrives as `03 00 10 0N 00` (code 0x1000, value N) and a write
@@ -629,7 +614,7 @@ enum StatusEvent {
 
         /// Battery percentage, for a 0x4010 event.
         ///
-        /// `X3.exe` (0x00413418-0x00413473) takes the high byte as a level in
+        /// The vendor software takes the high byte as a level in
         /// 1…10, rejects anything outside that range, and multiplies by 10 for
         /// both the progress bar and the "%d%%" label — so the device only ever
         /// reports battery in **10% steps**.
@@ -647,7 +632,7 @@ enum StatusEvent {
         }
 
         /// For a 0x4010 event: the low byte being zero means the device is
-        /// asleep (the app shows its "Device Sleep!" label, 0x00413429).
+        /// asleep (the app shows its "Device Sleep!" label).
         var isAsleep: Bool? {
             guard code == Code.battery.rawValue else { return nil }
             return (value & 0xFF) == 0
@@ -677,9 +662,8 @@ enum StatusEvent {
                 return "profile changed to \(value)"
             case .batteryLevel:
                 // Same destination field and same 1..10 validation as the
-                // 0x4010 battery handler ([edi+0x174], 0x00413467 vs
-                // 0x004134ed), so this is a battery level without the
-                // awake flag.
+                // 0x4010 battery handler, so this is a battery level
+                // without the awake flag.
                 let level = Int(value)
                 return (1...10).contains(level)
                     ? "battery level \(level) (\(level * 10)%)"
@@ -700,21 +684,21 @@ enum StatusEvent {
     }
 }
 
-/// Macros — report `0x09`, built by `fcn.00414340`.
+/// Macros — report `0x09`.
 ///
 /// This is the only report that uses the fragmented path: the logical buffer is
-/// 131 bytes (`0x83`), too large for one 64-byte report, so `fcn.00413570`
-/// splits bytes 3…130 into three chunks of 60/60/8. See §4 of PROTOCOL.md.
+/// 131 bytes (`0x83`), too large for one 64-byte report, so the sender
+/// splits bytes 3…130 into three chunks of 60/60/8.
 ///
 /// Layout of the 131-byte logical buffer (base confirmed as `ebp-0x130` from
-/// the checksum loop at 0x00414520):
+/// the checksum loop):
 ///
 ///     byte 0        0x09
 ///     byte 1        0x83  (131)
 ///     byte 2        macro index
-///     byte 3        macro object +0x0c        (unidentified)
-///     byte 4-6      macro object +0x43c, ×3   (unidentified)
-///     byte 7        macro object +0x40, or 1 if zero
+///     byte 3        loop mode
+///     byte 4-6      unidentified — one source value repeated three times
+///     byte 7        repeat count, or 1 if zero
 ///     byte 8-27     zero — never written by the builder
 ///     byte 28       event count
 ///     byte 29-128   event pairs, 2 bytes each → 50 events maximum
@@ -727,7 +711,7 @@ enum MacroReport {
     static let maxEvents = (129 - eventsOffset) / 2  // 50
 
     /// One macro step. The app's own record is 4 bytes — key code, a down/up
-    /// flag, and a 16-bit delay (0x00414400 ff.).
+    /// flag, and a 16-bit delay.
     struct Event {
         var keyCode: UInt8
         var isDown: Bool
@@ -736,12 +720,12 @@ enum MacroReport {
 
     /// Encode one event to its two wire bytes.
     ///
-    /// From 0x0041449e–0x004144cb: the delay is divided by 10.0, rounded by
+    /// The delay is divided by 10.0, rounded by
     /// adding 0.5 and truncating, then OR-ed with a flag — `0x01` for key-down,
     /// `0x81` for key-up. So bit 7 marks a key release and bits 0…6 carry the
     /// delay in units of 10 ms. Note the app forces bit 0 set in both cases.
     ///
-    /// Delays above 1270 ms take a second path (0x00414411) that splits them
+    /// Delays above 1270 ms take a second path that splits them
     /// into 200-unit blocks; `split(delayMs:)` mirrors that.
     static func encode(_ event: Event) -> [UInt8] {
         let clamped = max(1, event.delayMs)
@@ -769,8 +753,8 @@ enum MacroReport {
     ///
     /// **Confirmed on hardware**, one mode at a time, by uploading a slow macro
     /// and pressing a button mapped to it. The three values correspond exactly
-    /// to the `repeat_1/2/3` radio buttons in `res/MS/MS_1/selectmacro.xml` and
-    /// the `select_macro_4/5/6` strings in `res/lan.xml`.
+    /// to the `repeat_1/2/3` radio buttons in the vendor's UI layout and
+    /// the `select_macro_4/5/6` strings in the vendor's string table.
     enum LoopMode: UInt8 {
         /// Play `repeatCount` times, then stop. ("The Number Of Time To Play")
         case times = 0
@@ -797,12 +781,12 @@ enum MacroReport {
         }
     }
 
-    /// `repeatCount` is byte 7, read by the vendor builder from `[macro+0x40]`
-    /// with 1 substituted when that field is zero (0x004143b0). Confirmed on
+    /// `repeatCount` is byte 7, read by the vendor software from its macro record
+    /// with 1 substituted when that field is zero. Confirmed on
     /// hardware: a count of 3 makes one button press emit the macro 3 times.
     ///
-    /// `header456` is bytes 4-6, which the builder fills with `[macro+0x43c]`
-    /// three times over. Still unidentified.
+    /// `header456` is bytes 4-6, which the vendor software fills with one
+    /// value repeated three times. Still unidentified.
     static func build(
         index: UInt8, events: [Event],
         repeatCount: UInt8 = 1, loopMode: LoopMode = .times, header456: UInt8 = 0
@@ -837,7 +821,7 @@ enum MacroReport {
 
 /// USB HID keyboard usage codes.
 ///
-/// Decoding the action table at 0x0041c4a8 proved these are genuine HID usages
+/// Decoding the action table proved these are genuine HID usages
 /// rather than a vendor scheme: id 33 emits `11 01 06` and 0x06 is the HID
 /// usage for "c", giving Ctrl+C; id 43 emits `11 04 2B`, Alt + Tab.
 enum HIDUsage {
@@ -875,12 +859,12 @@ enum HIDUsage {
 
     /// Mouse buttons usable inside a **macro**.
     ///
-    /// The macro list renderer discriminates at 0x0040b341: it computes
+    /// The macro list renderer discriminates: it computes
     /// `keycode - 0xF1` and treats a result of 4 or less as a mouse event
     /// (drawing `mouse.png` instead of `keyboard_key_action.png`). So codes
     /// 0xF1…0xF5 are the five mouse buttons, matching the `mouse_key_1…5` and
     /// `L_Button`/`R_Button`/`M_Button`/`Forward_Button`/`Backward_Button`
-    /// strings in `res/lan.xml`.
+    /// strings in the vendor's string table.
     static let mouseButtons: [String: UInt8] = [
         "mouse_left": 0xF1, "mouse_right": 0xF2, "mouse_middle": 0xF3,
         "mouse_forward": 0xF4, "mouse_backward": 0xF5,
@@ -892,7 +876,7 @@ enum HIDUsage {
     }
 }
 
-/// Button mapping — report `0x08`, built by `fcn.004145f0`.
+/// Button mapping — report `0x08`.
 ///
 ///     byte 0      0x08
 ///     byte 1      0x3B (59)
@@ -900,11 +884,11 @@ enum HIDUsage {
 ///     byte 3-56   18 entries, 3 bytes each: [action][modifier][key]
 ///     byte 57-58  checksum over bytes 3…56, high then low
 ///
-/// The loop at 0x00414660–0x00414731 walks 18 buttons with a stride of 3,
+/// The loop walks 18 buttons with a stride of 3,
 /// starting the write pointer at `buffer[3]` and stopping when its counter
 /// reaches 58. The source records are 1272 bytes apart in the settings blob.
 ///
-/// Each UI action id is translated through a 63-entry table at 0x0041c4a8
+/// Each UI action id is translated through a 63-entry table
 /// (20-byte records: id, then the three output bytes). Decoding that table is
 /// what proves the key codes are **standard USB HID usages** and the modifier
 /// is a standard HID modifier bitmask — for example id 33 yields `11 01 06`
@@ -912,7 +896,7 @@ enum HIDUsage {
 ///
 /// Two action ids are special-cased in the builder rather than taken from the
 /// table: id 16 (0x00414 6d7) pulls a user-defined modifier and key from the
-/// button's own record, and id 17 (0x004146e7) emits a macro reference whose
+/// button's own record, and id 17 emits a macro reference whose
 /// slot is the button index plus one.
 enum ButtonReport {
     static let reportID: UInt8 = 0x08
@@ -921,7 +905,7 @@ enum ButtonReport {
     static let buttonCount = 18
 
     /// HID modifier bits, matching the Ctrl/Shift/Alt/Win checkboxes in
-    /// `res/shortcut.xml`.
+    /// the vendor's shortcut table.
     static let modifiers: [String: UInt8] = [
         "ctrl": 0x01, "shift": 0x02, "alt": 0x04, "win": 0x08, "gui": 0x08,
     ]
@@ -936,10 +920,9 @@ enum ButtonReport {
 
     /// Every action the device supports, as its **full three wire bytes**.
     ///
-    /// Names come from the binary, not from guesswork: the app resolves each
-    /// action id to a display string through a 90-case switch at 0x00411ebd
-    /// (index table 0x004124d8, jump table 0x004123f0), and the id → wire-byte
-    /// mapping is the 63-entry table at 0x0041c4a8.
+    /// Names come from the vendor software, not from guesswork: the app resolves each
+    /// action id to a display string through a 90-case switch, and the
+    /// id → wire-byte mapping is a 63-entry table.
     ///
     /// Storing all three bytes matters — `easy_aim` and `led_loop` carry a
     /// third byte of `0x03`, and the predefined shortcuts carry a modifier and
@@ -995,7 +978,7 @@ enum ButtonReport {
         "zoom_out": (0x11, 0x01, 0x2D),   // Ctrl+-
     ]
 
-    /// The factory default mapping, recovered from the table at 0x0041c9e0
+    /// The factory default mapping, recovered from the table
     /// (18 dwords of *action ids*, translated here to wire bytes).
     ///
     /// Entry 5 is action id 52 → wire `0x3C`, the mode-switch button. That code

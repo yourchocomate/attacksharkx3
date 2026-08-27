@@ -7,9 +7,9 @@ import Foundation
 /// a real button action — but **this product never populates them**. Two pieces
 /// of evidence, together conclusive:
 ///
-/// 1. Every report builder hardcodes byte 2 to `1` (0x00413df5, 0x00413ef9,
-///    0x00414012, 0x00414639). Nothing ever selects another slot.
-/// 2. The sender `fcn.00413570` has exactly six callers — the 0x0C preamble and
+/// 1. Every report builder hardcodes byte 2 to `1`. Nothing ever selects
+///    another slot.
+/// 2. The sender has exactly six callers — the 0x0C preamble and
 ///    reports 0x04, 0x05, 0x06, 0x08, 0x09. None of the profile buttons (add,
 ///    delete, rename, import, export, reset) is among them.
 ///

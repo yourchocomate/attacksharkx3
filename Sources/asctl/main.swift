@@ -3,12 +3,9 @@ import Foundation
 
 // asctl — an open-source macOS controller for the Attack Shark X3 mouse.
 //
-// The vendor ships Windows-only software. Everything this tool knows about the
-// device was recovered from that software.
-//
-// Protocol notes live in docs/PROTOCOL.md, which is deliberately not committed
-// (see .gitignore) — it cites specific addresses in the vendor binary. The
-// README carries what a user or contributor needs without it.
+// The vendor ships Windows-only software, so the device's configuration
+// protocol is implemented here from scratch: HID feature reports over the
+// 2.4GHz receiver or a USB cable, and GATT over Bluetooth.
 
 let usage = """
 asctl — Attack Shark X3 control for macOS
@@ -809,7 +806,7 @@ func buildLightReport(_ options: Options, mode: LightReport.Mode) -> [UInt8]? {
         if parts.count == 3 { (red, green, blue) = (parts[0], parts[1], parts[2]) }
     }
 
-    // Ranges from res/MS/MS_1/ms_1_page.xml.
+    // Ranges from the vendor's UI layout.
     if let sleep = options.sleepMinutes, !(1...60).contains(sleep) {
         print("error: --sleep must be 1-60 minutes"); return nil
     }
@@ -977,13 +974,13 @@ func commandButtons(_ options: Options) {
         return
     }
 
-    // `defaults` restores the factory mapping from the table at 0x0041c9e0.
+    // `defaults` restores the factory mapping from the table.
     if spec == "defaults" {
         let actions = ButtonReport.factoryDefault.map {
             ButtonReport.Action(code: $0, describe: String(format: "0x%02X", $0))
         }
         let report = ButtonReport.build(actions)
-        print("restoring the factory default mapping (0x0041c9e0):")
+        print("restoring the factory default mapping:")
         print("  1 left  2 right  3 wheel  4 dpi_cycle  5 MODE SWITCH  6 dpi_down")
         print("  7 forward  8 backward  9 mode  10-16 off  17 scroll_dn  18 scroll_up")
         print(Hex.dump(report))
@@ -1010,7 +1007,7 @@ func commandButtons(_ options: Options) {
         return
     }
 
-    // The vendor software enforces this too ("one_click_text" in res/lan.xml).
+    // The vendor software enforces this too.
     // Writing a mapping with no left click would leave the mouse without a
     // primary button, so refuse rather than brick the pointer.
     guard actions.contains(where: { $0?.code == ButtonReport.leftClickCode }) else {
@@ -1038,7 +1035,7 @@ func commandButtons(_ options: Options) {
     }
 
     print("\nWARNING: physical button order is NOT verified. Entry 1 is assumed")
-    print("to be the left button, but nothing in the binary proves the ordering.")
+    print("to be the left button, but nothing proves the ordering.")
 
     if sendReports([report], options) {
         print("ok — preamble + \(report.count)-byte report written")

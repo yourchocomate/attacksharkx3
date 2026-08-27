@@ -15,10 +15,10 @@ swift build -c release
 
 ## Why this can work
 
-The vendor's software has no kernel driver and no encryption. Its `hiddriver_*.dll`
-is a thin wrapper over `HidD_SetFeature`, so **configuration is plain HID feature
-reports** — which macOS supports natively through IOKit. Nothing needs to be
-emulated.
+There is no kernel driver and no encryption anywhere in this device's
+configuration path. **Settings are carried by plain HID feature reports**, which
+macOS supports natively through IOKit, and by standard GATT writes over
+Bluetooth. Nothing needs to be emulated.
 
 ---
 
@@ -46,7 +46,7 @@ by the device. That distinction matters here more than usual — see
 | Checksum — 16-bit sum, big-endian | decoded, two implementations cross-checked |
 | Sleep / deep sleep / key debounce | mapped with ranges; writes accepted, **behaviour unmeasured** (`power`) |
 | Scroll direction vs macOS natural scrolling | implemented, **not yet exercised** (`scroll`) |
-| Battery over 2.4 GHz | decoded from the binary; the event has **never fired** |
+| Battery over 2.4 GHz | decoded; the event has **never been observed firing** |
 | Move Wake | mapped — the vendor app **never transmits it**. Dead setting, not exposed |
 | Lighting | **not a feature of this hardware** — see below |
 | Reading current settings | **impossible** — the protocol is write-only |
@@ -56,11 +56,9 @@ by the device. That distinction matters here more than usual — see
 The X3 has **no user-controllable RGB**. The light beside the scroll wheel is a
 battery indicator: off on battery, magenta while charging, green at full.
 
-The vendor's own "Light Settings" panel is hidden in its layout and never
-displayed by its code — the section header is marked invisible and nothing in
-the binary ever reveals it. The lighting fields exist in the protocol because
-the vendor ships one binary across a product range; on this model nothing
-consumes them.
+The vendor's own tool does not expose a light settings panel for this model
+either. The lighting fields exist in the protocol because one implementation is
+shared across a product range; on the X3 nothing consumes them.
 
 `asctl light` is kept because that same report carries the sleep timers and key
 debounce, which do work. It warns you that the lighting half is inert.
@@ -280,9 +278,9 @@ into a fact with no risk to any hardware.
 Also wanted:
 
 - **Confirmation of the `1D57:FA60` identity.** Only `FA61` has been seen.
-- **Other Attack Shark models.** The `hiddriver` wrapper looks shared across the
-  range, so the framing may generalise. `asctl light-probe` is kept specifically
-  so lighting can be re-tested on a model that actually has it.
+- **Other Attack Shark models.** The report framing looks shared across the
+  range, so it may well generalise. `asctl light-probe` is kept specifically so
+  lighting can be re-tested on a model that actually has it.
 - **The 2.4 GHz battery event.** Decoded but never observed firing.
 - **Measuring the sleep timers**, which are currently write-accepted but unverified.
 - **A third replication of angle snap**, which still rests on n=2.
@@ -296,41 +294,27 @@ Bluetooth channel switching because it was tested on 2.4 GHz. Two replications
 were not enough — motion sync nearly produced a false positive at n=2.
 
 Lighting was the sharpest version of it. Sweeps were designed and run before
-establishing that the feature existed at all; the answer turned out to be a
-reference count in the vendor binary, available from the start. **When a
-feature's existence is in doubt, settle that before designing experiments to
-measure it** — a null result cannot distinguish "not implemented here" from
-"implemented and I sent it wrong".
+establishing that the feature existed at all, and no amount of sweeping could
+have answered that. **When a feature's existence is in doubt, settle that before
+designing experiments to measure it** — a null result cannot distinguish "not
+implemented here" from "implemented and I sent it wrong".
 
 ---
 
 ## Layout
 
 ```
-Sources/asctl/     Swift CLI
-  HID.swift          IOKit device discovery and feature-report I/O
-  BLE.swift          CoreBluetooth GATT transport
-  Protocol.swift     Report builders, checksum, action tables
-  ReportDescriptor.swift
-  Watch.swift        Input-report capture and rate measurement
-  Profile.swift      Host-side profiles
-  Scroll.swift       Scroll-direction event tap
-  BluetoothPower.swift
-  main.swift         CLI surface
-docs/PROTOCOL.md   Protocol notes — local only, not in the repository
-research/          Vendor installer, extracted files, disassembly — local only
-```
-
-`docs/PROTOCOL.md` and `research/` are both gitignored. The protocol notes cite
-specific addresses in the vendor's binary, and the research directory holds
-vendor material that is not redistributable. Neither is needed to build or use
-`asctl`.
-
-To reproduce the analysis, supply your own copy of the vendor installer:
-
-```bash
-innoextract "ATTACK SHARK X3 SOFT.exe" -d research/extracted
-r2 -q -c 'aaa; pdf @ fcn.00413ca0' research/extracted/app/X3.exe
+Sources/asctl/
+  HID.swift              IOKit device discovery and feature-report I/O
+  BLE.swift              CoreBluetooth GATT transport
+  Protocol.swift         Report builders, checksum, action tables
+  ReportDescriptor.swift HID report descriptor parser
+  Watch.swift            Input-report capture and rate measurement
+  Profile.swift          Host-side profiles
+  Scroll.swift           Scroll-direction event tap
+  BluetoothPower.swift   Bluetooth controller power cycling
+  LightProbe.swift       Lighting sweep, for models that have lighting
+  main.swift             CLI surface
 ```
 
 ---
@@ -340,7 +324,6 @@ r2 -q -c 'aaa; pdf @ fcn.00413ca0' research/extracted/app/X3.exe
 Reverse engineering for interoperability — producing software that works with
 hardware you own. No vendor code is copied, redistributed, or included in this
 repository; it contains only original code and a description of an interface.
-You must supply your own copy of the vendor installer to reproduce the analysis.
 
 ## License
 

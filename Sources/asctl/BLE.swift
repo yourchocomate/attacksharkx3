@@ -6,13 +6,13 @@ import Foundation
 /// Over Bluetooth the X3 exposes **no HID feature reports at all** (max feature
 /// report size 1), so configuration cannot use the same path as the 2.4GHz
 /// receiver. The vendor software bypasses HID entirely and writes to a GATT
-/// characteristic instead — `X3.exe` imports `BluetoothApis.dll` and calls
+/// characteristic instead — the vendor software uses the Windows GATT API,
 /// `BluetoothGATTGetServices` → `BluetoothGATTGetCharacteristics` →
 /// `BluetoothGATTBeginReliableWrite` → `BluetoothGATTSetCharacteristicValue` →
-/// `BluetoothGATTEndReliableWrite` (0x00405d40–0x00405fb0).
+/// `BluetoothGATTEndReliableWrite`.
 ///
-/// The characteristic it selects is filtered by UUID at 0x00405f10
-/// (`cmp dword [ebx-0x16], 0xfee3`), and a second path at 0x004067d0 matches
+/// The characteristic it selects is filtered by UUID
+/// (`cmp dword [ebx-0x16], 0xfee3`), and a second path matches
 /// `0xfee4` for notifications:
 ///
 ///     0xFEE3   write   host → device configuration

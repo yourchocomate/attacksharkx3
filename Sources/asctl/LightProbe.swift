@@ -1,35 +1,32 @@
 import Foundation
 
-/// `asctl light-probe` — a scripted hardware sweep for report `0x05`.
+/// `asctl light-probe` — a scripted hardware sweep of the lighting fields.
 ///
-/// ## Why this exists
+/// ## Why this still exists
 ///
-/// Report `0x05` is the one report whose layout is fully decoded from the vendor
-/// binary, whose checksum the device accepts, and which the device positively
-/// acknowledges (`03 10 50 00 05` on the status channel) — and which has never
-/// produced a visible change on the LED. Static analysis is finished: the whole
-/// send path was enumerated (six call sites of `fcn.00413570`, at 0x00413d7f,
-/// 0x00413e91, 0x00413efd, 0x00414316, 0x004145d4, 0x00414802) and `0x05` is the
-/// only lighting report the vendor software ever transmits. There is no live
-/// preview report and no second lighting path.
+/// The X3 has no user-controllable lighting: report `0x05`'s mode, brightness,
+/// speed and colour fields have no target on this model, and the vendor's own
+/// tool does not expose a light panel for it either. Sweeping them on an X3
+/// will do nothing, and that is the expected result.
 ///
-/// That leaves exactly one way to make progress: vary one field at a time on
-/// real hardware and look at the mouse. This command does that with pauses, so
-/// a single run answers the question instead of a dozen hand-typed commands.
+/// It is kept because the lighting fields are implemented and correct as far as
+/// they can be checked, and other mice in the same family do have lighting. On
+/// one of those, this command answers in a single run what would otherwise take
+/// a dozen hand-typed writes.
 ///
-/// ## Run it on the 2.4 GHz receiver
+/// ## Two confounders, if you run it on a model that does light up
 ///
-/// Three separate findings in this project were false negatives caused by
-/// testing at the wrong operating point (ripple control at 5000 DPI, motion sync
-/// at 3200 DPI, Bluetooth switching over 2.4 GHz). Lighting has two known
-/// confounders of the same kind:
+/// Both of these own the LED and will mask any result:
 ///
 ///   - **Bluetooth.** The mode LED shows the channel — green on X3-5.2, blue on
-///     X3-5.4. That is a status indicator, and a status indicator that owns the
-///     LED will mask any lighting mode underneath it.
-///   - **Charging.** A charge indicator has the same claim on the LED.
+///     X3-5.4. A status indicator that owns the LED masks anything underneath.
+///   - **Charging.** A charge indicator has exactly the same claim on it.
 ///
-/// So: switch the mouse to 2.4 GHz, unplug the cable, then probe.
+/// This is not hypothetical. Three findings in this project were false
+/// negatives from testing at the wrong operating point, and the wired lighting
+/// sweep became a fourth — it ran while the mouse was charging, which made its
+/// six clean "no change" lines worthless. Unplug, and prefer the 2.4 GHz
+/// receiver.
 enum LightProbe {
     struct Step {
         let title: String
@@ -41,7 +38,7 @@ enum LightProbe {
     /// deep sleep timer and the key debounce alongside the lighting fields.
     ///
     /// Every previous lighting attempt left those three at **zero**, and zero is
-    /// out of range for all three: `res/MS/MS_1/ms_1_page.xml` declares the sleep
+    /// out of range for all three: the vendor's UI layout declares the sleep
     /// sliders as 1–60 and debounce as 2–25, so the vendor software can never
     /// transmit a zero there. A firmware that validates the report as a whole
     /// would checksum it, acknowledge it, and then decline to apply it — which
@@ -75,9 +72,9 @@ enum LightProbe {
                     keyDebounceMs: debounce)))
         }
 
-        // Every mode here is 0…6. `ms_1_page.xml` hides list elements 8-12 on
-        // the live combo, so this model only offers the first seven — probing
-        // Rainbow Wave or Marquee would be probing another product's feature.
+        // Every mode here is 0…6. The vendor's live mode list hides entries
+        // 8-12, so this model only offers the first seven — probing Rainbow
+        // Wave or Marquee would be probing another product's feature.
         add("Static — full red", "a steady red LED", .staticColour)
         add("Static — full green", "the same LED, now green",
             .staticColour, red: 0, green: 255, blue: 0)
@@ -92,10 +89,10 @@ enum LightProbe {
     }
 
     /// Alternative encodings of byte 3, for the case where every mode step is
-    /// inert. The vendor binary writes `mode << 4` (0x00413dea, `shl dl, 4`),
-    /// which is what `LightReport.build` does — these are the readings that
-    /// would also be consistent with the disassembly if the combo index were
-    /// stored differently than assumed.
+    /// inert. The vendor software writes `mode << 4`, which is what
+    /// `LightReport.build` does — these are the other readings that would be
+    /// consistent with it if the combo index were stored differently than
+    /// assumed.
     ///
     /// Every one of these is "Static, full red, max brightness". Only byte 3
     /// changes, so anything that lights up identifies the encoding outright.
@@ -110,7 +107,7 @@ enum LightProbe {
         }
 
         return [
-            Step(title: "byte 3 = 0x10 — mode << 4 (what the binary does)",
+            Step(title: "byte 3 = 0x10 — mode << 4 (what the vendor software does)",
                  expectation: "steady red",
                  report: red(0x10)),
             Step(title: "byte 3 = 0x01 — mode unshifted, low nibble",
@@ -161,7 +158,7 @@ enum LightProbe {
                     not to respond, and it is not what we are testing.
                   • the **lighting**, which is what these reports address.
 
-                The vendor software cannot do this at all (see docs §11b), so a
+                The vendor software cannot do this at all, so a
                 positive result here is new ground rather than a reproduction.
 
                 """)
@@ -234,8 +231,8 @@ enum LightProbe {
 
                 If every step read "no change", that is consistent with the
                 firmware powering the wheel light down in Bluetooth mode — which
-                is what the vendor software's own connection gate implies
-                (docs §11b). It is not yet proof: the same null would appear if
+                is what the vendor software's own connection gate implies.
+                It is not yet proof: the same null would appear if
                 report 0x05 were being rejected for a reason unrelated to the
                 transport.
 

@@ -6,7 +6,7 @@ import IOKit.hid
 ///
 /// The vendor software never calls `GetFeature` — configuration is write-only,
 /// and everything the device has to say comes back as HID *input* reports
-/// (`Open_DevMonitor` in `hiddriver.dll` reads them and posts window messages).
+/// (the vendor's HID wrapper reads them and posts window messages).
 /// So this is the only readback channel that exists.
 ///
 /// It also gives us an objective way to verify a polling-rate change: at 125 Hz

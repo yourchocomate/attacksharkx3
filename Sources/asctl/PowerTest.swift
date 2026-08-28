@@ -228,6 +228,24 @@ enum PowerTest {
 
     // MARK: Sleep timers
 
+    private static func finish(elapsed: TimeInterval, minutes: Int, how: String) {
+        print(String(format: """
+
+            RESULT: %@ %.1f minutes after the last activity, against a %d minute
+            setting.
+            """, how, elapsed / 60, minutes))
+        if abs(elapsed / 60 - Double(minutes)) < max(0.5, Double(minutes) * 0.3) {
+            print("\n  CONFIRMED — that matches the setting.")
+        } else {
+            print("""
+
+              That does not match the setting. Re-run with a different value: if
+              the same time comes back regardless, the sleep field is not being
+              applied and the device is using a fixed timeout of its own.
+            """)
+        }
+    }
+
     /// Sleep is a timeout on inactivity — but *silence is not sleep*.
     ///
     /// A first version of this measured how long the device stayed quiet after
@@ -246,7 +264,7 @@ enum PowerTest {
     /// so rather than producing a number.
     static func sleep(_ options: Options) {
         let minutes = options.positionals[safe: 1].flatMap(Int.init) ?? 1
-        let patience = Double(minutes) * 60 * 3 + 180
+        let patience = options.autoSeconds ?? (Double(minutes) * 60 * 3 + 180)
 
         func mousePresent() -> Bool {
             HID.attackSharkDevices().contains {
@@ -254,40 +272,55 @@ enum PowerTest {
             }
         }
 
-        guard mousePresent() else {
+        let onBluetooth = mousePresent()
+        if !onBluetooth {
             print("""
-                This measurement needs the mouse on Bluetooth.
+                On the 2.4 GHz receiver, so watching the status channel.
 
-                It works by watching for the link to drop, which is a real state
-                change. Over the 2.4 GHz receiver the dongle stays enumerated
-                whatever the mouse is doing, so there is nothing to observe —
-                and measuring "no reports arriving" instead would just be
-                measuring how long you kept your hand still.
+                The device carries an awake flag: status event 0x4010 is
+                `03 10 40 <awake> <level>`, where an awake byte of zero is the
+                state the vendor app labels "Device Sleep!". That event has
+                never been observed firing in this project, so this run tests
+                two things at once — whether the sleep setting is applied, and
+                whether 0x4010 exists at all.
+
                 """)
-            return
         }
 
         print("""
             Sleep timer — measurement
 
             Setting sleep to \(minutes) minute(s), then waiting for the mouse to
-            drop its Bluetooth link. Nudge it once to start the clock, then leave
-            it completely alone — do not touch the mouse or the desk.
+            say or show that it has slept.
 
-            Up to \(Int(patience / 60)) minutes. A drop close to \(minutes)
+            The clock starts NOW and resets on any movement. Just stop touching
+            the mouse and the desk. There is nothing to do to begin.
+
+            Watching for: \(onBluetooth
+                ? "the Bluetooth link dropping"
+                : "status event 0x4010 with its awake byte at zero").
+
+            Up to \(Int(patience / 60)) minutes. A result close to \(minutes)
             minute(s) confirms the setting is applied.
 
             """)
 
+        // Set **both** timers. Report 0x05 carries a sleep timer and a deep
+        // sleep timer, and an earlier version of this test pinned deep sleep at
+        // 60 minutes while sweeping sleep — so if the device only powers down on
+        // the deeper timer, nothing could ever have been observed. Testing one
+        // timer while holding the other wide open measures nothing.
         let report = LightReport.build(
             mode: .off,
             sleepMinutes: UInt8(clamping: minutes),
-            deepSleepMinutes: UInt8(clamping: options.deepSleepMinutes ?? 60),
+            deepSleepMinutes: UInt8(clamping: options.deepSleepMinutes ?? minutes),
             keyDebounceMs: UInt8(clamping: options.debounceMs ?? 10))
         guard sendReports([report], options) else {
             print("could not write the setting — stopping")
             return
         }
+        print("   sleep = \(minutes) min, deep sleep = "
+            + "\(options.deepSleepMinutes ?? minutes) min")
 
         let devices = candidateDevices(options).filter { $0.maxInputReportSize > 0 }
         guard !devices.isEmpty else {
@@ -295,55 +328,204 @@ enum PowerTest {
             return
         }
 
-        print("waiting for you to nudge the mouse…")
-        var lastActivity: Date?
+        print("watching \(devices.count) interface(s):")
+        for device in devices { print("   \(device.descriptorText)") }
+        print("\nclock running — stop touching the mouse.\n")
+
+        // The clock starts now and resets on movement, rather than waiting for
+        // the user to start it. A first version required a nudge *after* the
+        // prompt appeared; the tester, having been told firmly not to touch the
+        // mouse, did not provide one, and the run spent six minutes waiting for
+        // a start signal and then reported the silence as a device finding.
+        var lastActivity: Date? = Date()
         let deadline = Date().addingTimeInterval(patience)
+        var lastNote = Date.distantPast
 
         while Date() < deadline {
-            // Enumeration is the state signal; input reports only tell us when
-            // the user last touched it, which is the clock's starting point.
-            if !mousePresent() {
-                guard let started = lastActivity else {
-                    print("  link dropped before the clock started — nudge it and retry")
-                    return
-                }
-                let elapsed = Date().timeIntervalSince(started)
-                print(String(format: """
-
-                    RESULT: the Bluetooth link dropped %.1f minutes after the last
-                    activity, against a %d minute setting.
-                    """, elapsed / 60, minutes))
-                if abs(elapsed / 60 - Double(minutes)) < max(0.5, Double(minutes) * 0.3) {
-                    print("\n  CONFIRMED — that matches the setting.")
-                } else {
-                    print("""
-
-                      That does not match the setting. Re-run with a different
-                      value: if the drop happens at the same time regardless,
-                      the sleep field is not being applied and the device is
-                      using a fixed timeout of its own.
-                    """)
-                }
+            // Over Bluetooth the link dropping is the signal; the interface
+            // disappears from the system.
+            if onBluetooth && !mousePresent() {
+                guard let started = lastActivity else { return }
+                finish(elapsed: Date().timeIntervalSince(started),
+                       minutes: minutes, how: "the Bluetooth link dropped")
                 return
             }
 
-            let watcher = InputWatcher(devices: devices, keepSamples: 0, quiet: true)
-            let count = watcher.run(seconds: 5).reduce(0) { $0 + $1.count }
-            if count > 0 {
-                if lastActivity == nil { print("  clock started") }
+            let watcher = InputWatcher(devices: devices, keepSamples: 256, quiet: true)
+            let channels = watcher.run(seconds: 5)
+
+            // A status event is a statement by the device about its own state,
+            // which is far better evidence than silence.
+            for channel in channels {
+                for sample in channel.samples {
+                    guard let event = StatusEvent.parse(sample) else { continue }
+                    if event.code == 0x4010 {
+                        let awake = event.value & 0xFF
+                        print("  \(Hex.encode(sample))   0x4010 awake=\(awake) "
+                            + "level=\(event.value >> 8)")
+                        if awake == 0, let started = lastActivity {
+                            finish(elapsed: Date().timeIntervalSince(started),
+                                   minutes: minutes,
+                                   how: "the device reported itself asleep (0x4010)")
+                            return
+                        }
+                    } else {
+                        print("  \(Hex.encode(sample))   \(event.description)")
+                    }
+                }
+            }
+
+            let motion = channels.reduce(0) { $0 + $1.count }
+            if motion > 0 {
+                if let started = lastActivity,
+                   Date().timeIntervalSince(started) > 20 {
+                    print(String(format: "  movement after %.1f min idle — clock reset",
+                                 Date().timeIntervalSince(started) / 60))
+                }
                 lastActivity = Date()
-            } else if let started = lastActivity {
-                let idle = Date().timeIntervalSince(started)
-                print(String(format: "  idle %.1f min — link still up", idle / 60))
+            } else if let started = lastActivity, Date().timeIntervalSince(lastNote) > 25 {
+                lastNote = Date()
+                print(String(format: "  idle %.1f min — still awake",
+                             Date().timeIntervalSince(started) / 60))
             }
         }
 
         print("""
 
-            RESULT: the link stayed up for the whole \(Int(patience / 60)) minutes.
-            Either the sleep setting is not applied, or this mouse does not drop
-            the link when it sleeps — in which case sleep is real but invisible
-            to this method.
+            RESULT: nothing observable happened in \(Int(patience / 60)) minutes.
+
+            No 0x4010 event arrived and, on Bluetooth, the link stayed up.
+
+            Check the idle lines above first: if the clock kept resetting, the
+            mouse was being disturbed and this measured nothing. If it counted
+            cleanly past \(minutes) minute(s), then either the sleep field is not
+            applied, or the device sleeps without announcing it and without
+            dropping its link — in which case sleep is real but invisible to
+            this method, and wake latency is the next thing to try.
             """)
+    }
+
+    // MARK: Wake latency
+
+    /// Whether the device was asleep, measured by how it *starts* reporting.
+    ///
+    /// The link-drop test came back clean-null: six idle minutes with sleep set
+    /// to 1 and the Bluetooth link never dropped, no 0x4010 event. That leaves
+    /// two readings it cannot separate — the field is not applied, or the device
+    /// sleeps silently and keeps its link.
+    ///
+    /// This separates them without needing the device to announce anything. A
+    /// radio coming out of a low-power state does not resume at full rate
+    /// instantly: the first reports after a wake are spaced more widely than the
+    /// steady-state interval, and they tighten up over the first few tens of
+    /// milliseconds. A device that never slept reports at its normal interval
+    /// from the very first packet.
+    ///
+    /// So the observable is the **shape of the first twenty inter-report gaps**,
+    /// which needs no timestamp from the tester and therefore carries none of
+    /// their reaction time.
+    static func wake(_ options: Options) {
+        let minutes = options.positionals[safe: 1].flatMap(Int.init) ?? 1
+
+        print("""
+            Wake latency — is the device sleeping at all?
+
+            Two captures of how the mouse *starts* reporting: once when it has
+            been active all along, and once after \(minutes) idle minute(s). A
+            radio resuming from low power spaces its first packets more widely
+            than its steady state; one that never slept reports normally from the
+            first packet.
+
+            Nothing to time by hand — the measurement is the gap pattern itself.
+
+            """)
+
+        // Both timers, for the reason given in sleep(): holding deep sleep at
+        // 60 while sweeping sleep tests nothing if the deeper timer is the one
+        // that actually powers the radio down.
+        let payload = LightReport.build(
+            mode: .off,
+            sleepMinutes: UInt8(clamping: minutes),
+            deepSleepMinutes: UInt8(clamping: options.deepSleepMinutes ?? minutes),
+            keyDebounceMs: UInt8(clamping: options.debounceMs ?? 10))
+        guard sendReports([payload], options) else {
+            print("could not write the setting — stopping")
+            return
+        }
+        print("   sleep = \(minutes) min, deep sleep = "
+            + "\(options.deepSleepMinutes ?? minutes) min")
+
+        print("\n── control: mouse already awake")
+        print("   move the mouse continuously for a few seconds…")
+        Thread.sleep(forTimeInterval: 2)
+        guard let control = firstGaps(options: options, seconds: 12) else {
+            print("   no motion captured — move the mouse when asked")
+            return
+        }
+        describe("control", control)
+
+        print("\n── now leave the mouse completely alone for \(minutes + 1) minute(s)")
+        let idleUntil = Date().addingTimeInterval(Double(minutes + 1) * 60)
+        while Date() < idleUntil {
+            Thread.sleep(forTimeInterval: 15)
+            let left = idleUntil.timeIntervalSinceNow
+            if left > 0 { print(String(format: "   %.1f min left…", left / 60)) }
+        }
+
+        print("\n   NOW move the mouse — one smooth continuous movement.")
+        guard let woken = firstGaps(options: options, seconds: 20) else {
+            print("   no motion captured")
+            return
+        }
+        describe("after idle", woken)
+
+        print("\n── comparison")
+        let controlHead = control.prefix(5).reduce(0, +) / 5
+        let wokenHead = woken.prefix(5).reduce(0, +) / 5
+        print(String(format: "  mean of the first five gaps: %.2f ms awake, %.2f ms after idle",
+                     controlHead, wokenHead))
+
+        if wokenHead > controlHead * 2.5 && wokenHead > 20 {
+            print("""
+
+                  SLEPT. The first packets after idling are spaced far more
+                  widely than when the mouse was already active, which is a
+                  radio resuming from a low-power state. Sleep is real on this
+                  device — it simply neither announces it nor drops the link.
+                """)
+        } else {
+            print("""
+
+                  NO WAKE SIGNATURE. The mouse starts reporting the same way
+                  after idling as when it was already active, so nothing here
+                  suggests it slept at all.
+
+                  Combined with the link staying up and no 0x4010, the weight of
+                  evidence is that the sleep field is not applied — or that its
+                  unit is not minutes, which the debounce field's 2 ms units
+                  make a live possibility. Re-run with a much larger value
+                  before concluding.
+                """)
+        }
+    }
+
+    /// The first inter-report gaps once motion starts.
+    private static func firstGaps(options: Options, seconds: Double) -> [Double]? {
+        let devices = candidateDevices(options).filter { $0.maxInputReportSize > 0 }
+        guard !devices.isEmpty else { return nil }
+        let watcher = InputWatcher(devices: devices, keepSamples: 0, quiet: true)
+        let channels = watcher.run(seconds: seconds)
+
+        for channel in channels where channel.arrivalsNs.count > 6 {
+            let gaps = zip(channel.arrivalsNs.dropFirst(), channel.arrivalsNs)
+                .map { Double($0 - $1) / 1_000_000 }
+            return Array(gaps.prefix(20))
+        }
+        return nil
+    }
+
+    private static func describe(_ label: String, _ gaps: [Double]) {
+        let shown = gaps.prefix(10).map { String(format: "%.1f", $0) }
+        print("   \(label): first gaps \(shown.joined(separator: ", ")) ms")
     }
 }

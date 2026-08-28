@@ -48,7 +48,7 @@ by the device. That distinction matters here more than usual — see
 | Device discovery, framing, raw feature-report I/O | working |
 | Checksum — 16-bit sum, big-endian | decoded, two implementations cross-checked |
 | Key debounce | **verified on hardware** (`power-test debounce`) — and the field counts **2 ms units**, so the vendor's "2-25" slider is really 4-50 ms |
-| Sleep / deep sleep | mapped with ranges; writes accepted, **behaviour unmeasured** (`power`, `power-test sleep`) |
+| Sleep / deep sleep | mapped with ranges; writes accepted, **behaviour unmeasured**. Three attempts to measure it were all invalid — see the protocol notes (`power`, `power-test sleep`/`wake`) |
 | Scroll direction vs macOS natural scrolling | implemented, **not yet exercised** (`scroll`) |
 | Battery over 2.4 GHz | decoded; the event has **never been observed firing** |
 | Move Wake | mapped — the vendor app **never transmits it**. Dead setting, not exposed |

@@ -19,8 +19,9 @@ COMMANDS
   power-test <what>        Measure whether report 0x05's timings do anything.
                              debounce [seconds]  A/B the key debounce floor by
                                                  timing your fastest clicks
-                             sleep <minutes>     Time how long the device takes
-                                                 to go quiet when left alone
+                             sleep <minutes>     Watch for the device to sleep
+                             wake <minutes>      Detect sleep from how the mouse
+                                                 starts reporting after idling
   list                     List Attack Shark HID interfaces (--all for every HID device)
   descriptor               Dump and decode the HID report descriptor
   probe                    Read-only sweep of feature reports (safe; never writes)
@@ -1594,9 +1595,11 @@ case "power-test":
     switch options.positionals[safe: 0]?.lowercased() {
     case "debounce": PowerTest.debounce(options)
     case "sleep": PowerTest.sleep(options)
+    case "wake": PowerTest.wake(options)
     default:
         print("usage: asctl power-test debounce [seconds]")
         print("       asctl power-test sleep <minutes>")
+        print("       asctl power-test wake <minutes>")
     }
 case "blediag": commandBLEDiag(options)
 case "light": commandLight(options)

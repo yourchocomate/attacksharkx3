@@ -281,6 +281,11 @@ final class AppState: ObservableObject {
     }
 
     func note(_ line: String) {
+        // Mirror to stderr as well as the in-app pane. A GUI that only logs
+        // into its own window is undiagnosable when the thing that is broken
+        // stops the window from being useful — run the binary from a terminal
+        // and the same messages come out.
+        FileHandle.standardError.write(Data("[asctl] \(line)\n".utf8))
         log.append(line)
         if log.count > 400 { log.removeFirst(log.count - 400) }
     }
@@ -378,8 +383,16 @@ final class AppState: ObservableObject {
             .sorted().joined(separator: "|")
         guard signature != lastDeviceSignature else { return }
 
+        // The first poll is not a change — it is the initial reading. Treating
+        // it as one restarted a listener that had just been started, which on a
+        // serial queue meant a second attempt stuck behind the first.
+        let firstPoll = lastDeviceSignature.isEmpty
         let wasConnected = !lastDeviceSignature.isEmpty
         lastDeviceSignature = signature
+        if firstPoll && !found.isEmpty {
+            detectLink()
+            return
+        }
         devices = found
 
         if found.isEmpty {
@@ -438,6 +451,10 @@ final class AppState: ObservableObject {
                     format: "listener could not reach the mouse — retrying in %.0fs",
                     delay))
             }
+        }
+        monitor.onBatteryFailed = { [weak self] reason in
+            self?.note("battery: \(reason)")
+            self?.batteryReading = false
         }
         monitor.onConnectionChange = { [weak self] up in
             guard let self else { return }

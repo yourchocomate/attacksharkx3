@@ -36,10 +36,21 @@ final class StatusMonitor {
     /// connection failed, every read went to a listener that was not there and
     /// the gauge simply stayed blank.
     var onConnectionChange: ((Bool) -> Void)?
+    /// Called when the battery could not be read on this connection.
+    var onBatteryFailed: ((String) -> Void)?
     /// Called when an attempt fails and another is scheduled.
     var onRetry: ((Int, TimeInterval) -> Void)?
 
     private var running = false
+    /// Bumped on every start, so a loop from a previous start exits instead of
+    /// running forever.
+    ///
+    /// The queue is serial: a restart used to enqueue a second block behind a
+    /// first that was still inside an eight-second scan. When the first block
+    /// finished its pass it saw `running` true again — set by the restart — and
+    /// looped, so the second block never got the queue and the first never
+    /// noticed it had been superseded.
+    private var generation = 0
     private var wantsBatteryRead = false
     private(set) var connected = false
     private let queue = DispatchQueue(label: "asctl.status", qos: .utility)
@@ -57,6 +68,8 @@ final class StatusMonitor {
     func start(link: GUITransport.Link) {
         guard !running else { return }
         running = true
+        generation += 1
+        let mine = generation
         queue.async { [weak self] in
             guard let self else { return }
             // Retry until told to stop.
@@ -68,13 +81,13 @@ final class StatusMonitor {
             // before the device was ready and the battery and DPI stage stayed
             // blank for the whole session.
             var attempt = 0
-            while self.running {
+            while self.running && self.generation == mine {
                 switch link {
-                case .receiver: self.runHID()
-                case .bluetooth: self.runBLE()
+                case .receiver: self.runHID(mine: mine)
+                case .bluetooth: self.runBLE(mine: mine)
                 }
                 self.setConnected(false)
-                guard self.running else { break }
+                guard self.running, self.generation == mine else { break }
                 attempt += 1
                 // Back off gently, but keep trying — a mouse switched off and
                 // on again should be picked up without the user doing anything.
@@ -94,8 +107,8 @@ final class StatusMonitor {
         DispatchQueue.main.async { self.onConnectionChange?(value) }
     }
 
-    private func runHID() {
-        while running {
+    private func runHID(mine: Int) {
+        while running && generation == mine {
             let devices = HID.attackSharkDevices().filter { $0.canConfigure }
             guard !devices.isEmpty else {
                 Thread.sleep(forTimeInterval: 2)
@@ -122,37 +135,77 @@ final class StatusMonitor {
     /// Connecting per read was churning the link — and since the battery read
     /// rides the same connection, holding it open removes a whole class of
     /// inconsistent readings.
-    private func runBLE() {
+    private func runBLE(mine: Int) {
         let ble = BLEConnection()
         defer { ble.disconnect() }
 
-        guard ble.discover(),
-              let target = ble.foundPeripherals.map({ $0.0 }).first(where: GUITransport.isX3),
-              ble.connect(target),
-              ble.subscribe()
+        guard ble.discover() else {
+            DispatchQueue.main.async {
+                self.onBatteryFailed?(ble.lastError ?? "could not scan for the mouse")
+            }
+            setConnected(false)
+            return
+        }
+        guard let target = ble.foundPeripherals.map({ $0.0 }).first(where: GUITransport.isX3)
         else {
+            DispatchQueue.main.async {
+                self.onBatteryFailed?("the mouse was not among the peripherals found")
+            }
+            setConnected(false)
+            return
+        }
+        guard ble.connect(target), ble.subscribe() else {
+            DispatchQueue.main.async {
+                self.onBatteryFailed?(ble.lastError ?? "could not open the GATT link")
+            }
             setConnected(false)
             return
         }
         setConnected(true)
 
-        // One read, as soon as the link is up. Never again on this connection.
+        // One *successful* read per connection.
+        //
+        // The earlier version set "already read" before knowing whether the
+        // read worked, so a first attempt that came back nil — which happens
+        // when the link is up but the characteristic is not ready yet — left
+        // the gauge blank for the life of the connection with nothing retrying.
         wantsBatteryRead = true
         var batteryRead = false
+        var batteryAttempts = 0
 
-        while running {
+        while running && generation == mine {
             ble.pump(seconds: 1.0)
             for packet in ble.takeNotifications() {
                 guard let event = StatusEvent.parseBLE(packet) else { continue }
                 emit(event, packet)
             }
             if wantsBatteryRead && !batteryRead {
-                wantsBatteryRead = false
-                batteryRead = true
+                batteryAttempts += 1
                 if let level = ble.readBattery(), (0...100).contains(level) {
                     let raw = ble.batteryRaw
                     let name = ble.connectedName ?? "?"
+                    batteryRead = true
+                    wantsBatteryRead = false
                     DispatchQueue.main.async { self.onBattery?(level, raw, name) }
+                } else if batteryAttempts >= 8 {
+                    // Give up after a few passes rather than reading forever —
+                    // each read is a round trip and re-reading 2A19 on one link
+                    // returns a climbing value anyway.
+                    wantsBatteryRead = false
+                    DispatchQueue.main.async {
+                        // Say *why*. readBattery returns nil both when the
+                        // 2A19 characteristic was never discovered and when a
+                        // read timed out, and those need different fixes.
+                        let reason = ble.lastError ?? "read timed out"
+                        let chars = ble.describeServices()
+                            .filter { $0.contains("2A19") }
+                            .joined(separator: "; ")
+                        self.onBatteryFailed?(
+                            "\(reason) after \(batteryAttempts) attempts"
+                            + (chars.isEmpty
+                               ? " — 2A19 was not among the discovered characteristics"
+                               : " — 2A19 is present: \(chars)"))
+                    }
                 }
             }
             if ble.isDisconnected {

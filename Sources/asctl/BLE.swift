@@ -122,7 +122,33 @@ final class BLEConnection: NSObject {
 
     /// Find the mouse: prefer peripherals the system already has connected,
     /// then fall back to scanning.
+    /// Whether Bluetooth is usable before we touch CoreBluetooth.
+    ///
+    /// Creating a CBCentralManager when TCC will refuse does not fail — it
+    /// terminates the process with SIGABRT. Checking the authorization first
+    /// turns a crash into a message for the cases it can see.
+    ///
+    /// It cannot see every case: TCC attributes a request to the *responsible*
+    /// process, so an app launched from another program is judged by that
+    /// program's Info.plist, and the crash happens before any of our code runs.
+    /// Launching the app normally is the only fix for that one.
+    static var authorizationProblem: String? {
+        switch CBManager.authorization {
+        case .denied:
+            return "Bluetooth access was denied — grant it to asctl in "
+                + "System Settings ▸ Privacy & Security ▸ Bluetooth"
+        case .restricted:
+            return "Bluetooth access is restricted on this Mac"
+        default:
+            return nil
+        }
+    }
+
     func discover(timeout: TimeInterval = 8) -> Bool {
+        if let problem = BLEConnection.authorizationProblem {
+            lastError = problem
+            return false
+        }
         guard wait(5, until: { self.poweredOn }) else {
             lastError = "Bluetooth is not powered on or not permitted"
             return false

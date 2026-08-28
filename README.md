@@ -47,7 +47,8 @@ by the device. That distinction matters here more than usual — see
 | Profiles | **host-side** (`profile save/apply/list`) — the device's own slots are unused by this product |
 | Device discovery, framing, raw feature-report I/O | working |
 | Checksum — 16-bit sum, big-endian | decoded, two implementations cross-checked |
-| Sleep / deep sleep / key debounce | mapped with ranges; writes accepted, **behaviour unmeasured** (`power`) |
+| Key debounce | **verified on hardware** (`power-test debounce`) — the setting truncates the shortest press against a floor |
+| Sleep / deep sleep | mapped with ranges; writes accepted, **behaviour unmeasured** (`power`, `power-test sleep`) |
 | Scroll direction vs macOS natural scrolling | implemented, **not yet exercised** (`scroll`) |
 | Battery over 2.4 GHz | decoded; the event has **never been observed firing** |
 | Move Wake | mapped — the vendor app **never transmits it**. Dead setting, not exposed |
@@ -323,7 +324,10 @@ Also wanted:
   range, so it may well generalise. `asctl light-probe` is kept specifically so
   lighting can be re-tested on a model that actually has it.
 - **The 2.4 GHz battery event.** Decoded but never observed firing.
-- **Measuring the sleep timers**, which are currently write-accepted but unverified.
+- **Measuring the sleep timers**, which are currently write-accepted but
+  unverified. `asctl power-test sleep` watches for the Bluetooth link to drop,
+  which is the only unambiguous signal — a mouse nobody is moving is silent
+  whether it is asleep or awake.
 - **A third replication of angle snap**, which still rests on n=2.
 
 ### A note on method

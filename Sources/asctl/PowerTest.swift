@@ -28,17 +28,21 @@ enum PowerTest {
     /// is inconclusive rather than negative. The report says which happened.
     static func debounce(_ options: Options) {
         let seconds = options.positionals[safe: 1].flatMap(Double.init) ?? 20
-        let settings = [2, 25]
-        var results: [(ms: Int, durations: [Double], gaps: [Double])] = []
-        var resolutions: [Double] = []
+        // Three points, not two. A/B confirms *that* a floor exists; a sweep
+        // shows how it scales, which is what says whether the wire unit is a
+        // millisecond or something else. One measured floor cannot tell those
+        // apart, and this protocol has already produced several confident
+        // conclusions from a single observation that did not survive.
+        let settings = options.colours?
+            .split(separator: ",").compactMap { Int($0) } ?? [5, 15, 25]
 
         print("""
-            Key debounce — A/B test
+            Key debounce — sweep over \(settings.map(String.init).joined(separator: ", ")) ms
 
-            For each setting you will get \(Int(seconds)) seconds. Click the LEFT
-            button as fast and as *briefly* as you can — flick it, do not hold
-            it. You do not need superhuman speed: what matters is whether your
-            fastest taps hit a wall, not how fast they are.
+            \(Int(seconds)) seconds per setting. Click the LEFT button as fast
+            and as briefly as you can — flick it, do not hold it. You do not need
+            superhuman speed: what matters is whether your fastest taps hit a
+            wall, not how fast they are.
 
             Keep the mouse moving very slightly while you click. It only reports
             when something changes, and continuous reporting is what gives the
@@ -46,14 +50,17 @@ enum PowerTest {
 
             """)
 
+        var rows: [(ms: Int, floor: Double, spread: Double, gapFloor: Double, n: Int)] = []
+        var worstSampling = 0.0
+
         for ms in settings {
             print("── setting debounce to \(ms) ms")
-            let report = LightReport.build(
+            let payload = LightReport.build(
                 mode: .off,
                 sleepMinutes: UInt8(clamping: options.sleepMinutes ?? 10),
                 deepSleepMinutes: UInt8(clamping: options.deepSleepMinutes ?? 10),
                 keyDebounceMs: UInt8(clamping: ms))
-            guard sendReports([report], options) else {
+            guard sendReports([payload], options) else {
                 print("could not write the setting — stopping")
                 return
             }
@@ -62,90 +69,85 @@ enum PowerTest {
 
             let (durations, gaps, minGap, medianGap) = collectClicks(
                 seconds: seconds, options: options)
-            results.append((ms, durations, gaps))
-            resolutions.append(minGap)
             printClickStats(
                 durations: durations, gaps: gaps, minGap: minGap, medianGap: medianGap)
+            worstSampling = max(worstSampling, minGap)
+
+            let sorted = durations.sorted()
+            guard let floor = sorted.first else {
+                print("   no clicks captured — cannot use this point\n")
+                continue
+            }
+            let head = sorted.prefix(5)
+            rows.append((
+                ms, floor, (head.last ?? floor) - floor, gaps.min() ?? 0, sorted.count))
             if ms != settings.last { print("\n   pausing 3s\n"); Thread.sleep(forTimeInterval: 3) }
         }
 
-        print("\n── comparison")
-        guard results.count == 2,
-              let lowMin = results[0].durations.min(),
-              let highMin = results[1].durations.min()
-        else {
-            print("  not enough clicks were captured to compare")
+        print("\n── results")
+        print("  setting   shortest press   spread of 5   shortest gap   presses")
+        for row in rows {
+            print(String(format: "  %5d ms   %11.1f ms   %9.1f ms   %10.1f ms   %7d",
+                         row.ms, row.floor, row.spread, row.gapFloor, row.n))
+        }
+        print(String(format: "\n  coarsest sampling seen: %.2f ms", worstSampling))
+
+        guard rows.count >= 2 else {
+            print("  not enough usable points")
             return
         }
 
-        print(String(format: "  shortest press at %2d ms setting: %6.1f ms",
-                     results[0].ms, lowMin))
-        print(String(format: "  shortest press at %2d ms setting: %6.1f ms",
-                     results[1].ms, highMin))
-
-        let resolution = resolutions.max() ?? 0
-        let separation = Double(results[1].ms - results[0].ms)
-
-        print(String(format: "  coarsest sampling seen:          %6.1f ms", resolution))
-
-        if resolution > separation / 3 {
-            print(String(format: """
-
-                  UNRESOLVABLE. Even at its fastest, this run sampled every
-                  %.1f ms, and the two settings differ by %.0f ms. Re-run over
-                  the 2.4 GHz receiver after `asctl pollrate 1000`, and keep the
-                  mouse moving slightly so it reports continuously.
-                """, resolution, separation))
-            return
-        }
-
-        // A debounce floor does not shift the distribution, it truncates it:
-        // the fastest presses pile up against the limit instead of spreading
-        // out. Comparing the *shape* near the minimum separates that from a
-        // user who simply clicked more slowly the second time.
-        func spread(_ values: [Double]) -> Double {
-            let head = values.sorted().prefix(5)
-            guard let low = head.first, let high = head.last else { return 0 }
-            return high - low
-        }
-        let lowSpread = spread(results[0].durations)
-        let highSpread = spread(results[1].durations)
-
-        print(String(format: "  spread of the five shortest:     %6.1f ms at %d ms, "
-                     + "%.1f ms at %d ms",
-                     lowSpread, results[0].ms, highSpread, results[1].ms))
-
-        let ratio = highMin / Double(results[1].ms)
-        let walled = highSpread < lowSpread / 2 && highMin > lowMin * 1.5
-
-        if walled {
-            print(String(format: """
-
-                  CONFIRMED — key debounce is applied.
-
-                  At %d ms the fastest presses pile up at %.1f ms within a
-                  %.1f ms spread, while at %d ms they spread over %.1f ms and
-                  reach %.1f ms. A setting that merely changed nothing would
-                  leave both distributions the same shape; truncation at the
-                  bottom is what a floor looks like.
-
-                  The floor sits at %.2f times the configured value, which
-                  suggests the debounce is applied to both edges — the release
-                  cannot register until one interval after the press, and the
-                  next press not until one after the release.
-                """, results[1].ms, highMin, highSpread,
-                     results[0].ms, lowSpread, lowMin, ratio))
-        } else if lowMin >= Double(results[1].ms) {
+        // A floor only counts as measured if the fastest presses pile up
+        // against it. Where the setting is below what a hand can produce, the
+        // limit is the tester, not the device — those points say nothing and
+        // must be excluded rather than fitted.
+        let walled = rows.filter { $0.spread < 6 }
+        guard !walled.isEmpty else {
             print("""
 
-                  INCONCLUSIVE — no press was faster than the high setting even
-                  at the low one, so the floor was never reached.
+                  INCONCLUSIVE — no setting produced a wall. Every distribution
+                  is as wide at the bottom as human clicking makes it, so no
+                  floor was ever reached.
                 """)
-        } else {
+            return
+        }
+
+        print("\n  points where the fastest presses hit a wall:")
+        var ratios: [Double] = []
+        for row in walled {
+            let ratio = row.floor / Double(row.ms)
+            ratios.append(ratio)
+            print(String(format: "    %2d ms setting -> %.1f ms floor   (%.2fx)",
+                         row.ms, row.floor, ratio))
+        }
+
+        let mean = ratios.reduce(0, +) / Double(ratios.count)
+        let spread = (ratios.max() ?? mean) - (ratios.min() ?? mean)
+
+        print(String(format: """
+
+              CONFIRMED — key debounce is applied. The fastest presses truncate
+              against a limit instead of spreading out, which is what a floor
+              does and what merely clicking slower does not.
+
+              Floor = %.2f x the configured value%@.
+            """, mean, spread < 0.25 ? ", consistently across settings"
+                                     : String(format: " (varying %.2f between points)", spread)))
+
+        if abs(mean - 2) < 0.25 && ratios.count >= 2 {
             print("""
 
-                  NO EFFECT MEASURED. The two distributions have the same shape
-                  near the minimum, so nothing suggests the value is applied.
+                  A consistent 2x says the wire value is not milliseconds: the
+                  field counts 2 ms units, so the vendor's "2-25 ms" slider is
+                  really 4-50 ms. Treat the label as the vendor's, not the
+                  device's.
+                """)
+        } else if ratios.count < 2 {
+            print("""
+
+                  Only one setting produced a wall, so the scaling is a single
+                  point. Re-run including a lower setting you can still out-click
+                  to confirm it holds.
                 """)
         }
     }

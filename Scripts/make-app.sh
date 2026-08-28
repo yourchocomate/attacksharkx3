@@ -22,18 +22,28 @@ swift build -c release
 rm -f .build/release/asctl
 swift build -c release
 
+echo "rendering the app icon…"
+ICONSET="$OUT/asctl.iconset"
+rm -rf "$ICONSET"
+mkdir -p "$ICONSET"
+swift Scripts/make-icon.swift "$ICONSET" >/dev/null
+iconutil -c icns "$ICONSET" -o "$OUT/asctl.icns"
+rm -rf "$ICONSET"
+
 echo "assembling $APP"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 cp .build/release/asctl "$APP/Contents/MacOS/asctl"
 cp Sources/asctl/Info.plist "$APP/Contents/Info.plist"
+cp "$OUT/asctl.icns" "$APP/Contents/Resources/asctl.icns"
 
 # A bundled app needs the keys a bare binary does not: a package type, and the
 # high-resolution flag so the window is not rendered at 1x on a Retina display.
 /usr/libexec/PlistBuddy -c "Add :CFBundlePackageType string APPL" "$APP/Contents/Info.plist" 2>/dev/null || true
 /usr/libexec/PlistBuddy -c "Add :NSHighResolutionCapable bool true" "$APP/Contents/Info.plist" 2>/dev/null || true
 /usr/libexec/PlistBuddy -c "Add :LSMinimumSystemVersion string 12.0" "$APP/Contents/Info.plist" 2>/dev/null || true
+/usr/libexec/PlistBuddy -c "Add :CFBundleIconFile string asctl" "$APP/Contents/Info.plist" 2>/dev/null || true
 
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 

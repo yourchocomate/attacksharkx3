@@ -36,6 +36,8 @@ final class StatusMonitor {
     /// connection failed, every read went to a listener that was not there and
     /// the gauge simply stayed blank.
     var onConnectionChange: ((Bool) -> Void)?
+    /// Called when an attempt fails and another is scheduled.
+    var onRetry: ((Int, TimeInterval) -> Void)?
 
     private var running = false
     private var wantsBatteryRead = false
@@ -57,11 +59,29 @@ final class StatusMonitor {
         running = true
         queue.async { [weak self] in
             guard let self else { return }
-            switch link {
-            case .receiver: self.runHID()
-            case .bluetooth: self.runBLE()
+            // Retry until told to stop.
+            //
+            // A single failed attempt used to end the listener for good: the
+            // Bluetooth path returns when discovery or connect fails, and
+            // nothing tried again. On a cold app launch the mouse is often not
+            // discoverable for the first second or two, so the listener died
+            // before the device was ready and the battery and DPI stage stayed
+            // blank for the whole session.
+            var attempt = 0
+            while self.running {
+                switch link {
+                case .receiver: self.runHID()
+                case .bluetooth: self.runBLE()
+                }
+                self.setConnected(false)
+                guard self.running else { break }
+                attempt += 1
+                // Back off gently, but keep trying — a mouse switched off and
+                // on again should be picked up without the user doing anything.
+                let delay = min(10.0, 2.0 * Double(min(attempt, 5)))
+                DispatchQueue.main.async { self.onRetry?(attempt, delay) }
+                Thread.sleep(forTimeInterval: delay)
             }
-            self.running = false
             self.setConnected(false)
         }
     }

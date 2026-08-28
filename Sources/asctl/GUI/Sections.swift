@@ -8,15 +8,21 @@ import SwiftUI
 struct Section: View {
     let title: String
     var subtitle: String? = nil
+    /// Whether this section holds edits that have not reached the mouse.
+    var dirty: Bool = false
+    var onDiscard: (() -> Void)? = nil
     @State var expanded: Bool
     @ViewBuilder var content: () -> AnyView
 
     init<C: View>(
         _ title: String, subtitle: String? = nil, expanded: Bool = false,
+        dirty: Bool = false, onDiscard: (() -> Void)? = nil,
         @ViewBuilder content: @escaping () -> C
     ) {
         self.title = title
         self.subtitle = subtitle
+        self.dirty = dirty
+        self.onDiscard = onDiscard
         self._expanded = State(initialValue: expanded)
         self.content = { AnyView(content()) }
     }
@@ -37,7 +43,22 @@ struct Section: View {
                             .font(.system(size: 11))
                             .foregroundStyle(.secondary)
                     }
+                    if dirty {
+                        // An amber dot rather than a word: this appears on
+                        // several sections at once and the point is that the
+                        // values on screen are not what the mouse holds.
+                        Circle().fill(Color.orange).frame(width: 6, height: 6)
+                        Text("not applied")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.orange)
+                    }
                     Spacer()
+                    if dirty, let onDiscard {
+                        Button("Discard") { onDiscard() }
+                            .buttonStyle(.plain)
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 7)
@@ -51,7 +72,12 @@ struct Section: View {
                     .padding(.bottom, 10)
             }
         }
-        .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.05)))
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(dirty ? Color.orange.opacity(0.08) : Color.primary.opacity(0.05)))
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .strokeBorder(dirty ? Color.orange.opacity(0.35) : .clear, lineWidth: 1))
     }
 }
 

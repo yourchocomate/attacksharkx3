@@ -14,13 +14,24 @@ import Foundation
 /// by `kCGScrollWheelEventIsContinuous`: trackpads and Magic Mice produce
 /// *continuous* (pixel) scrolling, while a wheel produces *discrete* (line)
 /// scrolling. Inverting only discrete events leaves the trackpad untouched.
-enum ScrollDirection: String {
+enum ScrollDirection: String, CaseIterable, Identifiable {
     /// Do nothing — the mouse follows the macOS preference. Default.
     case follow
     /// Traditional direction, whatever macOS is set to.
     case standard
     /// Natural direction, whatever macOS is set to.
     case natural
+
+    var id: String { rawValue }
+
+    /// Short form for a segmented control.
+    var short: String {
+        switch self {
+        case .follow: return "Follow macOS"
+        case .standard: return "Traditional"
+        case .natural: return "Natural"
+        }
+    }
 
     var label: String {
         switch self {
@@ -373,6 +384,63 @@ enum ScrollController {
         CFRunLoopRun()
     }
 
+    // MARK: - Launching the app itself at login
+
+    /// A login agent for the GUI, distinct from the scroll-only one.
+    enum AppLogin {
+        static let label = "io.github.yourchocomate.asctl.app"
+
+        static var url: URL {
+            FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent("Library/LaunchAgents/\(label).plist")
+        }
+
+        static var installed: Bool {
+            FileManager.default.fileExists(atPath: url.path)
+        }
+
+        /// The bundle's launcher, so the login item starts the app rather than
+        /// a bare binary — a bundle keeps its Accessibility and Bluetooth
+        /// grants across rebuilds, and a loose executable does not.
+        static var launcher: String? {
+            let bundle = Bundle.main.bundleURL
+            guard bundle.pathExtension == "app" else { return nil }
+            return bundle.appendingPathComponent("Contents/MacOS/launch").path
+        }
+
+        static func install() throws {
+            guard let program = launcher else {
+                throw NSError(domain: "asctl", code: 1, userInfo: [
+                    NSLocalizedDescriptionKey:
+                        "Only the app bundle can be launched at login. "
+                        + "Build it with Scripts/make-app.sh and run that.",
+                ])
+            }
+            let lines = [
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
+                "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" "
+                    + "\"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">",
+                "<plist version=\"1.0\">",
+                "<dict>",
+                "    <key>Label</key><string>\(label)</string>",
+                "    <key>ProgramArguments</key>",
+                "    <array><string>\(program)</string></array>",
+                "    <key>RunAtLoad</key><true/>",
+                "    <key>KeepAlive</key><false/>",
+                "</dict>",
+                "</plist>",
+            ]
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try lines.joined(separator: "\n").write(
+                to: url, atomically: true, encoding: .utf8)
+        }
+
+        static func uninstall() throws {
+            if installed { try FileManager.default.removeItem(at: url) }
+        }
+    }
+
     // MARK: - Running in the background
 
     static let agentLabel = "io.github.yourchocomate.asctl.scroll"
@@ -412,6 +480,11 @@ enum ScrollController {
             at: agentURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         try lines.joined(separator: "\n").write(
             to: agentURL, atomically: true, encoding: .utf8)
+    }
+
+    /// Whether the login agent is currently installed.
+    static var agentInstalled: Bool {
+        FileManager.default.fileExists(atPath: agentURL.path)
     }
 
     static func uninstall() throws {

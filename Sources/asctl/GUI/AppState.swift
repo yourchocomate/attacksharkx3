@@ -267,6 +267,7 @@ final class AppState: ObservableObject {
         else { return }
         apply(profile: profile)
         provenance = .lastApplied
+        captureBaseline()
         note("restored the last configuration asctl wrote")
     }
 
@@ -350,6 +351,55 @@ final class AppState: ObservableObject {
     /// of its configuration it ever volunteers.
     @Published var deviceActiveStage: Int?
 
+    /// Poll the HID registry so a mouse that is unplugged, switched off, or
+    /// moved to another transport is noticed without the user pressing Rescan.
+    ///
+    /// The X3 has a physical 2.4G/OFF/BT slider, so the transport can change
+    /// under the app at any moment. Detecting the link once at launch left the
+    /// window claiming a connection that no longer existed and a listener bound
+    /// to a device that had gone.
+    private var deviceWatch: Timer?
+    private var lastDeviceSignature = ""
+
+    func startDeviceWatch() {
+        deviceWatch?.invalidate()
+        let timer = Timer(timeInterval: 2, repeats: true) { [weak self] _ in
+            self?.pollDevices()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        deviceWatch = timer
+        pollDevices()
+    }
+
+    private func pollDevices() {
+        let found = HID.attackSharkDevices()
+        let signature = found
+            .map { "\($0.vendorID):\($0.productID):\($0.transport):\($0.usage)" }
+            .sorted().joined(separator: "|")
+        guard signature != lastDeviceSignature else { return }
+
+        let wasConnected = !lastDeviceSignature.isEmpty
+        lastDeviceSignature = signature
+        devices = found
+
+        if found.isEmpty {
+            note("mouse disconnected — check the 2.4G / OFF / BT slider underneath")
+            battery = nil
+            deviceActiveStage = nil
+            stopMonitor()
+            return
+        }
+
+        let previous = link
+        detectLink()
+        if !wasConnected || link != previous {
+            note("connection changed — restarting the listener on \(link.rawValue)")
+            deviceActiveStage = nil
+            battery = nil
+            restartMonitor()
+        }
+    }
+
     func startMonitor() {
         guard !monitorRunning else { return }
         monitor.onEvent = { [weak self] event, raw in
@@ -362,6 +412,12 @@ final class AppState: ObservableObject {
                 self.deviceActiveStage = reported - 1
                 if self.activeStage != reported - 1 {
                     self.activeStage = reported - 1
+                    // Move the baseline with it. The device pressing its own
+                    // DPI button is the mouse *reporting* its state, not the
+                    // user editing anything — treating it as an unapplied edit
+                    // marked the panel dirty for a change that had already
+                    // happened on the hardware.
+                    self.baseline.activeStage = reported - 1
                     self.note("device switched to DPI stage \(reported)")
                 }
             case StatusEvent.Code.writeAck.rawValue:
@@ -372,6 +428,16 @@ final class AppState: ObservableObject {
         }
         monitor.onBattery = { [weak self] level, raw, name in
             self?.recordBattery(level, raw: "\(name) 2A19=\(Hex.encode(raw))", name: name)
+        }
+        monitor.onRetry = { [weak self] attempt, delay in
+            guard let self else { return }
+            // Only mention the first couple, or a mouse that is simply switched
+            // off fills the log with retries.
+            if attempt <= 2 {
+                self.note(String(
+                    format: "listener could not reach the mouse — retrying in %.0fs",
+                    delay))
+            }
         }
         monitor.onConnectionChange = { [weak self] up in
             guard let self else { return }
@@ -390,11 +456,203 @@ final class AppState: ObservableObject {
     func stopMonitor() {
         monitor.stop()
         monitorRunning = false
+        monitorConnected = false
     }
 
     func restartMonitor() {
         stopMonitor()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { self.startMonitor() }
+    }
+
+    // MARK: Scroll direction
+
+    /// The one feature here that writes nothing to the mouse.
+    ///
+    /// macOS applies a single "Natural scrolling" preference to the trackpad
+    /// *and* every mouse, with no way to separate them, and the X3 has no
+    /// device-side scroll setting — nothing in the vendor UI or any config
+    /// report touches it. So the wheel is corrected on the host by intercepting
+    /// discrete scroll events, leaving the trackpad's continuous ones alone.
+    @Published var scrollMode: ScrollDirection = .follow
+    @Published var scrollRunning = false
+    @Published var scrollAgentInstalled = ScrollController.agentInstalled
+
+    var macOSNaturalScrolling: Bool { ScrollController.macOSNaturalScrolling }
+
+    var scrollAccessibilityGranted: Bool {
+        ScrollController.ensureAccessibility(prompt: false)
+    }
+
+    func applyScrollMode() {
+        ScrollController.stop()
+        scrollRunning = false
+
+        guard scrollMode != .follow else {
+            note("scroll: following the macOS setting — nothing intercepted")
+            return
+        }
+        guard ScrollController.ensureAccessibility(prompt: true) else {
+            note("scroll: Accessibility permission needed — a system dialog "
+                + "should have appeared. Grant it to asctl, then try again.")
+            return
+        }
+        guard ScrollController.start(scrollMode) else {
+            note("scroll: the event tap could not be created even with "
+                + "permission held. Toggle asctl off and on in Accessibility.")
+            return
+        }
+        scrollRunning = true
+        note("scroll: \(scrollMode.short) — "
+            + (ScrollController.shouldInvert(scrollMode)
+               ? "inverting the wheel, trackpad untouched"
+               : "no inversion needed while macOS already matches"))
+    }
+
+    func stopScroll() {
+        ScrollController.stop()
+        scrollRunning = false
+        note("scroll: stopped intercepting")
+    }
+
+    /// Superseded by the app's own login item, which keeps everything running.
+    /// Kept for the CLI, where there is no app to stay resident.
+    func installScrollAgent() {
+        guard scrollMode != .follow else {
+            note("scroll: nothing to install for `follow`")
+            return
+        }
+        do {
+            try ScrollController.install(scrollMode)
+            scrollAgentInstalled = true
+            note("scroll: login agent installed — load it now with")
+            note("        launchctl load \(ScrollController.agentURL.path)")
+        } catch {
+            note("scroll: could not install — \(error.localizedDescription)")
+        }
+    }
+
+    func uninstallScrollAgent() {
+        do {
+            try ScrollController.uninstall()
+            scrollAgentInstalled = false
+            note("scroll: login agent removed")
+        } catch {
+            note("scroll: could not remove — \(error.localizedDescription)")
+        }
+    }
+
+    // MARK: Uncommitted changes
+
+    /// The configuration as last written to the mouse — or, before anything has
+    /// been written, the defaults the editor started from.
+    ///
+    /// Needed because the protocol is write-only: nothing can be read back, so
+    /// "has this changed?" can only be answered against a record we keep
+    /// ourselves. Without it every panel looks identical whether or not its
+    /// values have reached the device.
+    @Published var baseline: Profile = Profile()
+
+    func captureBaseline() { baseline = currentProfile() }
+
+    var dpiDirty: Bool {
+        let now = currentProfile()
+        return now.dpiStages != baseline.dpiStages
+            || now.stageEnabled != baseline.stageEnabled
+            || now.activeStage != baseline.activeStage
+            || now.colours != baseline.colours
+    }
+
+    var sensorDirty: Bool {
+        let now = currentProfile()
+        return now.liftOff2mm != baseline.liftOff2mm
+            || now.rippleControl != baseline.rippleControl
+            || now.angleSnap != baseline.angleSnap
+            || now.motionSync != baseline.motionSync
+    }
+
+    var pollingDirty: Bool { pollingRate != baseline.pollingRateHz }
+
+    var powerDirty: Bool {
+        sleepMinutes != baseline.sleepMinutes
+            || deepSleepMinutes != baseline.deepSleepMinutes
+            || debounceMs != baseline.debounceMs
+    }
+
+    var buttonsDirty: Bool { buttonActions != baseline.buttons }
+
+    var anyDirty: Bool {
+        dpiDirty || sensorDirty || pollingDirty || powerDirty || buttonsDirty
+    }
+
+    func discardDPI() {
+        guard let values = baseline.dpiStages else { return }
+        let enabled = baseline.stageEnabled
+        let colours = baseline.colours
+        stages = (0..<8).map { index in
+            let dpi = index < values.count ? values[index] : 0
+            let on = enabled.flatMap { index < $0.count ? $0[index] : false } ?? false
+            var colour = Color.white
+            if let colours, index < colours.count, colours[index].count == 3 {
+                let c = colours[index]
+                colour = Color(.sRGB, red: Double(c[0]) / 255,
+                               green: Double(c[1]) / 255, blue: Double(c[2]) / 255)
+            }
+            return Stage(dpi: dpi, enabled: on, colour: colour)
+        }
+        activeStage = baseline.activeStage ?? 0
+        note("discarded DPI changes")
+    }
+
+    func discardSensor() {
+        liftOff2mm = baseline.liftOff2mm ?? false
+        rippleControl = baseline.rippleControl ?? false
+        angleSnap = baseline.angleSnap ?? false
+        motionSync = baseline.motionSync ?? false
+        note("discarded sensor changes")
+    }
+
+    func discardPolling() {
+        pollingRate = baseline.pollingRateHz ?? 1000
+        note("discarded polling rate change")
+    }
+
+    func discardPower() {
+        sleepMinutes = baseline.sleepMinutes ?? 10
+        deepSleepMinutes = baseline.deepSleepMinutes ?? 10
+        debounceMs = baseline.debounceMs ?? 10
+        note("discarded power changes")
+    }
+
+    func discardButtons() {
+        buttonActions = baseline.buttons ?? AppState.factoryActionNames
+        note("discarded button changes")
+    }
+
+    // MARK: Launching at login
+
+    @Published var launchAtLogin = ScrollController.AppLogin.installed
+
+    /// Whether this is the bundle rather than a bare binary.
+    ///
+    /// Only the bundle is worth launching at login: it keeps its Accessibility
+    /// and Bluetooth grants across rebuilds, where a loose executable is
+    /// identified by path and loses them.
+    var canLaunchAtLogin: Bool { ScrollController.AppLogin.launcher != nil }
+
+    func setLaunchAtLogin(_ on: Bool) {
+        do {
+            if on {
+                try ScrollController.AppLogin.install()
+                note("will open at login, and keep running in the menu bar")
+            } else {
+                try ScrollController.AppLogin.uninstall()
+                note("will no longer open at login")
+            }
+            launchAtLogin = ScrollController.AppLogin.installed
+        } catch {
+            note("login item: \(error.localizedDescription)")
+            launchAtLogin = ScrollController.AppLogin.installed
+        }
     }
 
     // MARK: Profiles
@@ -559,7 +817,10 @@ final class AppState: ObservableObject {
             let result = GUITransport.send(reports, over: link, dryRun: dryRun)
             DispatchQueue.main.async {
                 for line in result.lines { self.note(line) }
-                if result.ok && !dryRun { self.recordApplied() }
+                if result.ok && !dryRun {
+                    self.recordApplied()
+                    self.captureBaseline()
+                }
                 self.busy = false
             }
         }

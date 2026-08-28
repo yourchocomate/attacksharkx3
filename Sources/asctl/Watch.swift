@@ -114,11 +114,14 @@ final class InputWatcher {
             let info = channels[index].info
             let device = info.device
 
-            guard IOHIDDeviceOpen(device, IOOptionBits(kIOHIDOptionsTypeNone)) == kIOReturnSuccess
-            else {
-                if !quiet {
-                    print("  (could not open \(info.descriptorText) — skipping)")
-                }
+            let opening = IOHIDDeviceOpen(device, IOOptionBits(kIOHIDOptionsTypeNone))
+            guard opening == kIOReturnSuccess else {
+                // Always report this, even when quiet. A failed open is not a
+                // detail: it means the whole window collected nothing, and
+                // hiding it is how a listener that silently stopped working
+                // after its first window went unnoticed.
+                FileHandle.standardError.write(Data(
+                    "  (could not open \(info.descriptorText) — skipping)\n".utf8))
                 continue
             }
             opened.append(device)
@@ -155,9 +158,15 @@ final class InputWatcher {
 
         CFRunLoopRunInMode(.defaultMode, seconds, false)
 
+        // Unschedule *and close*. Leaving the device open was a real bug: a
+        // caller that runs short windows back to back — which is how the GUI
+        // listener works — found every open after the first one failing, so it
+        // captured one window's worth of events and then silently nothing.
         for device in opened {
             IOHIDDeviceUnscheduleFromRunLoop(device, runLoop, CFRunLoopMode.defaultMode.rawValue)
+            IOHIDDeviceClose(device, IOOptionBits(kIOHIDOptionsTypeNone))
         }
+        opened.removeAll()
         return channels
     }
 

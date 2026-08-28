@@ -13,10 +13,37 @@ struct MainView: View {
     @State private var selectedButton = 0
     @State private var showUnmapped = false
 
+    @State private var showingSettings = false
+
     var body: some View {
         VStack(spacing: 0) {
             header
             Divider()
+            if showingSettings {
+                SettingsView(state: state)
+            } else {
+                deviceBody
+            }
+        }
+        .frame(minWidth: 1180, minHeight: 780)
+        .onAppear {
+            state.refreshDevices()
+            state.refreshProfiles()
+            state.restoreLastApplied()
+            state.startMonitor()
+            state.startDeviceWatch()
+        }
+        .onChange(of: state.link) { _ in state.restartMonitor() }
+        .onReceive(NotificationCenter.default.publisher(for: .asctlShowSettings)) { _ in
+            showingSettings = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .asctlShowDevice)) { _ in
+            showingSettings = false
+        }
+    }
+
+    private var deviceBody: some View {
+        VStack(spacing: 0) {
             provenanceBar
             Divider()
             HStack(alignment: .top, spacing: 0) {
@@ -29,14 +56,6 @@ struct MainView: View {
             Divider()
             footer
         }
-        .frame(minWidth: 1180, minHeight: 780)
-        .onAppear {
-            state.refreshDevices()
-            state.refreshProfiles()
-            state.restoreLastApplied()
-            state.startMonitor()
-        }
-        .onChange(of: state.link) { _ in state.restartMonitor() }
     }
 
     private var provenanceBar: some View {
@@ -77,9 +96,12 @@ struct MainView: View {
             .help("Detected automatically. Override only if you know better.")
 
             Circle()
-                .fill(state.isReady ? Color.green : Color.orange)
+                .fill(state.devices.isEmpty ? Color.red
+                      : (state.isReady ? Color.green : Color.orange))
                 .frame(width: 8, height: 8)
-            Text(state.connectionSummary)
+            Text(state.devices.isEmpty
+                 ? "mouse not found — check the slider underneath"
+                 : state.connectionSummary)
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
@@ -107,10 +129,25 @@ struct MainView: View {
                 ? "Connected — DPI-button presses sync the active stage here"
                 : "Not connected to the device's event channel")
 
-            Button("Rescan") { state.refreshDevices() }
-            Button("Apply all") { state.applyEverything() }
-                .keyboardShortcut("s")
-                .disabled(state.busy || !state.isReady)
+            // Two labelled destinations rather than one toggling icon: a
+            // button whose meaning depends on where you already are gives no
+            // clue what it will do.
+            Picker("", selection: $showingSettings) {
+                Label("Mouse", systemImage: "computermouse").tag(false)
+                Label("Settings", systemImage: "gearshape").tag(true)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(width: 190)
+
+            Button(state.anyDirty ? "Apply changes" : "Apply all") {
+                state.applyEverything()
+            }
+            .keyboardShortcut("s")
+            .disabled(state.busy || !state.isReady)
+            .help(state.anyDirty
+                  ? "Write every section that has unapplied changes"
+                  : "Rewrite every setting, even though nothing has changed")
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
@@ -121,7 +158,8 @@ struct MainView: View {
     private var leftColumn: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 8) {
-                Section("Button Setting", expanded: true) {
+                Section("Button Setting", expanded: true, dirty: state.buttonsDirty,
+                        onDiscard: { state.discardButtons() }) {
                     VStack(alignment: .leading, spacing: 4) {
                         ForEach(AppState.physicalButtons, id: \.self) { index in
                             buttonRow(index)
@@ -242,6 +280,51 @@ struct MainView: View {
                     }
                 }
 
+                Section("Scrolling",
+                        subtitle: state.scrollRunning ? "active" : nil) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack(spacing: 6) {
+                            Circle()
+                                .fill(state.macOSNaturalScrolling ? Color.orange : Color.secondary)
+                                .frame(width: 6, height: 6)
+                            Text("macOS natural scrolling is "
+                                + (state.macOSNaturalScrolling ? "ON" : "off"))
+                                .font(.system(size: 11))
+                            Spacer()
+                        }
+
+                        Picker("", selection: $state.scrollMode) {
+                            ForEach(ScrollDirection.allCases) { mode in
+                                Text(mode.short).tag(mode)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        .onChange(of: state.scrollMode) { _ in state.applyScrollMode() }
+
+                        Text(state.scrollMode.label)
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+
+                        if state.scrollRunning {
+                            HStack(spacing: 5) {
+                                Circle().fill(Color.green).frame(width: 6, height: 6)
+                                Text("intercepting the wheel — trackpad untouched")
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(.secondary)
+                                Spacer()
+                            }
+                        }
+
+                        Text(
+                            "Applies while asctl is running. Turn on \"Open at login\" "
+                            + "in settings to have it always active."
+                        )
+                        .font(.system(size: 10))
+                        .foregroundStyle(.tertiary)
+                    }
+                }
+
                 Section("Bluetooth") {
                     VStack(alignment: .leading, spacing: 6) {
                         Text(
@@ -335,7 +418,9 @@ struct MainView: View {
     private var rightColumn: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 8) {
-                Section("DPI Setting", subtitle: "\(state.stages.filter { $0.enabled }.count) stages", expanded: true) {
+                Section("DPI Setting", subtitle: "\(state.stages.filter { $0.enabled }.count) stages",
+                        expanded: true, dirty: state.dpiDirty,
+                        onDiscard: { state.discardDPI() }) {
                     VStack(alignment: .leading, spacing: 6) {
                         ForEach(state.stages.indices, id: \.self) { index in
                             DPIStageRow(
@@ -402,7 +487,9 @@ struct MainView: View {
                     }
                 }
 
-                Section("Polling Rate", subtitle: "\(state.pollingRate) Hz", expanded: true) {
+                Section("Polling Rate", subtitle: "\(state.pollingRate) Hz", expanded: true,
+                        dirty: state.pollingDirty,
+                        onDiscard: { state.discardPolling() }) {
                     VStack(alignment: .leading, spacing: 10) {
                         PollingRateDial(selection: $state.pollingRate)
                         HStack {
@@ -416,7 +503,8 @@ struct MainView: View {
                     }
                 }
 
-                Section("Sensor") {
+                Section("Sensor", dirty: state.sensorDirty,
+                        onDiscard: { state.discardSensor() }) {
                     VStack(alignment: .leading, spacing: 6) {
                         ToggleRow(
                             title: "Lift-off distance", offLabel: "1 mm", onLabel: "2 mm",
@@ -440,7 +528,8 @@ struct MainView: View {
                     }
                 }
 
-                Section("Power Setting") {
+                Section("Power Setting", dirty: state.powerDirty,
+                        onDiscard: { state.discardPower() }) {
                     VStack(alignment: .leading, spacing: 6) {
                         SliderRow(title: "Sleep time", range: 1...60, unit: "min",
                                   value: $state.sleepMinutes)

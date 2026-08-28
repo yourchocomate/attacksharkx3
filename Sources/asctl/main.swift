@@ -16,6 +16,11 @@ USAGE
 COMMANDS
   gui                      Open the graphical interface
   selftest                 Verify generated payloads against the protocol (no hardware)
+  power-test <what>        Measure whether report 0x05's timings do anything.
+                             debounce [seconds]  A/B the key debounce floor by
+                                                 timing your fastest clicks
+                             sleep <minutes>     Time how long the device takes
+                                                 to go quiet when left alone
   list                     List Attack Shark HID interfaces (--all for every HID device)
   descriptor               Dump and decode the HID report descriptor
   probe                    Read-only sweep of feature reports (safe; never writes)
@@ -1584,6 +1589,14 @@ case "pollrate": commandPollRate(options)
 case "dpi": commandDpi(options)
 case "gui": runGUI()
 case "selftest": SelfTest.run()
+case "power-test":
+    switch options.positionals[safe: 0]?.lowercased() {
+    case "debounce": PowerTest.debounce(options)
+    case "sleep": PowerTest.sleep(options)
+    default:
+        print("usage: asctl power-test debounce [seconds]")
+        print("       asctl power-test sleep <minutes>")
+    }
 case "blediag": commandBLEDiag(options)
 case "light": commandLight(options)
 case "light-probe": LightProbe.run(options)

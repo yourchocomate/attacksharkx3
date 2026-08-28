@@ -28,6 +28,13 @@ final class InputWatcher {
         /// way to measure DPI on a device that cannot be read back.
         var countsX = 0
         var countsY = 0
+        /// Every change of the button bitmask, with the monotonic time it
+        /// arrived. Key debounce is a *minimum* time between accepted
+        /// transitions, so the shortest press and the shortest gap between
+        /// presses are where a change in the setting has to show up.
+        var buttonEdges: [(ns: UInt64, mask: UInt8)] = []
+        var lastButtonMask: UInt8 = 0
+        var sawFirstButtonReport = false
         /// Angle snap forces small off-axis motion to exactly zero, so the
         /// fraction of moving reports that are perfectly axis-locked is a much
         /// sharper signal than the y/x ratio -- and unlike the ratio, it does
@@ -160,13 +167,24 @@ final class InputWatcher {
         if channels[index].firstSeen == nil { channels[index].firstSeen = now }
         channels[index].lastSeen = now
         channels[index].count += 1
-        channels[index].arrivalsNs.append(clock_gettime_nsec_np(CLOCK_UPTIME_RAW))
+        let nowNs = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
+        channels[index].arrivalsNs.append(nowNs)
         // Two layouts. The 2.4GHz boot-mouse report has no report ID and is
         // 7 bytes: buttons, int16 dx, int16 dy, wheel. The Bluetooth report is
         // 8 bytes and *does* carry a leading report ID (0x02), shifting every
         // field by one. Reading the BLE form with the USB offsets makes the
         // button byte look like movement.
         let base = (bytes.count >= 8 && bytes[0] == 0x02) ? 1 : 0
+        if bytes.count > base {
+            let mask = bytes[base]
+            if !channels[index].sawFirstButtonReport {
+                channels[index].sawFirstButtonReport = true
+                channels[index].lastButtonMask = mask
+            } else if mask != channels[index].lastButtonMask {
+                channels[index].buttonEdges.append((nowNs, mask))
+                channels[index].lastButtonMask = mask
+            }
+        }
         if bytes.count >= base + 5 { channels[index].totalReports += 1 }
         if bytes.count >= base + 5 {
             let dx = Int16(

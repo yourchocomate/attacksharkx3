@@ -36,23 +36,73 @@ final class BLEConnection: NSObject {
         CBUUID(string: "FEE1"), CBUUID(string: "FEE7"),
     ]
 
+    /// Guards every property below that is touched from more than one queue.
+    ///
+    /// This is not defensive tidying. `CBCentralManager` is created with
+    /// `queue: nil`, so all delegate callbacks arrive on the **main** queue,
+    /// while the GUI's status listener drains `notifications` and reads the
+    /// battery from a **background** queue. Appending to a Swift array on one
+    /// thread while another clears it is undefined behaviour — it drops
+    /// packets and returns torn values, which is exactly what a listener that
+    /// misses events and a battery level that will not settle look like.
+    private let lock = NSLock()
+
+    private func locked<T>(_ body: () -> T) -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return body()
+    }
+
     private var central: CBCentralManager!
     private var peripheral: CBPeripheral?
     private var writeCharacteristic: CBCharacteristic?
     private var notifyCharacteristic: CBCharacteristic?
     private var batteryCharacteristic: CBCharacteristic?
-    private(set) var batteryPercent: Int?
+    private var _batteryPercent: Int?
+    var batteryPercent: Int? { locked { _batteryPercent } }
+    /// The raw bytes 2A19 returned, kept for diagnosis. A battery level that
+    /// looks wrong is almost always the wrong characteristic on the wrong
+    /// device, and the only way to tell is to look at what actually arrived.
+    private var _batteryRaw: [UInt8] = []
+    var batteryRaw: [UInt8] { locked { _batteryRaw } }
+    private(set) var connectedName: String?
 
-    private var poweredOn = false
-    private var discovered = false
-    private var servicesPending = 0
+    private var _poweredOn = false
+    private var poweredOn: Bool {
+        get { locked { _poweredOn } }
+        set { locked { _poweredOn = newValue } }
+    }
+    private var _discovered = false
+    private var discovered: Bool {
+        get { locked { _discovered } }
+        set { locked { _discovered = newValue } }
+    }
+    private var _servicesPending = 0
+    private var servicesPending: Int {
+        get { locked { _servicesPending } }
+        set { locked { _servicesPending = newValue } }
+    }
 
     /// Everything found, for reporting.
-    private(set) var foundPeripherals: [(CBPeripheral, [CBUUID])] = []
-    private(set) var notifications: [[UInt8]] = []
-    private(set) var lastError: String?
-    private var writeError: String?
-    private var writeCompleted = false
+    private var _foundPeripherals: [(CBPeripheral, [CBUUID])] = []
+    var foundPeripherals: [(CBPeripheral, [CBUUID])] { locked { _foundPeripherals } }
+    private var _notifications: [[UInt8]] = []
+    var notifications: [[UInt8]] { locked { _notifications } }
+    private var _lastError: String?
+    var lastError: String? {
+        get { locked { _lastError } }
+        set { locked { _lastError = newValue } }
+    }
+    private var _writeError: String?
+    private var writeError: String? {
+        get { locked { _writeError } }
+        set { locked { _writeError = newValue } }
+    }
+    private var _writeCompleted = false
+    private var writeCompleted: Bool {
+        get { locked { _writeCompleted } }
+        set { locked { _writeCompleted = newValue } }
+    }
 
     override init() {
         super.init()
@@ -81,7 +131,7 @@ final class BLEConnection: NSObject {
         for peripheral in central.retrieveConnectedPeripherals(
             withServices: Self.candidateServices)
         {
-            foundPeripherals.append((peripheral, []))
+            locked { _foundPeripherals.append((peripheral, [])) }
         }
 
         if foundPeripherals.isEmpty {
@@ -102,6 +152,7 @@ final class BLEConnection: NSObject {
             lastError = "could not connect to \(target.name ?? "peripheral")"
             return false
         }
+        connectedName = target.name
         target.discoverServices(nil)
         wait(timeout) { self.discovered && self.servicesPending == 0 }
         return writeCharacteristic != nil
@@ -168,9 +219,42 @@ final class BLEConnection: NSObject {
             lastError = "this device exposes no 2A19 Battery Level characteristic"
             return nil
         }
+        // Clear first. Without this the wait below is satisfied immediately by
+        // the previous reading and every read after the first returns a stale
+        // value that never updates.
+        locked {
+            _batteryPercent = nil
+            _batteryRaw = []
+        }
         peripheral.readValue(for: characteristic)
         wait(timeout) { self.batteryPercent != nil }
         return batteryPercent
+    }
+
+    /// Whether the link has dropped underneath us.
+    var isDisconnected: Bool {
+        guard let peripheral else { return true }
+        return peripheral.state != .connected
+    }
+
+    /// Take everything received since the last call, clearing the buffer.
+    func takeNotifications() -> [[UInt8]] {
+        locked {
+            let batch = _notifications
+            _notifications.removeAll()
+            return batch
+        }
+    }
+
+    /// Pump the run loop briefly so queued notifications are delivered.
+    func pump(seconds: TimeInterval) {
+        wait(seconds) { false }
+    }
+
+    /// Drop the link. Without this the connection lingers until the central
+    /// manager is deallocated, which makes repeated reads unpredictable.
+    func disconnect() {
+        if let peripheral { central.cancelPeripheralConnection(peripheral) }
     }
 
     func listen(seconds: TimeInterval) {
@@ -216,10 +300,13 @@ extension BLEConnection: CBCentralManagerDelegate {
         _ central: CBCentralManager, didDiscover peripheral: CBPeripheral,
         advertisementData: [String: Any], rssi RSSI: NSNumber
     ) {
-        guard !foundPeripherals.contains(where: { $0.0.identifier == peripheral.identifier })
-        else { return }
         let services = advertisementData[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID] ?? []
-        foundPeripherals.append((peripheral, services))
+        locked {
+            guard !_foundPeripherals.contains(where: {
+                $0.0.identifier == peripheral.identifier
+            }) else { return }
+            _foundPeripherals.append((peripheral, services))
+        }
     }
 
     func centralManager(
@@ -262,10 +349,13 @@ extension BLEConnection: CBPeripheralDelegate {
         guard let data = characteristic.value else { return }
         if characteristic.uuid == Self.batteryLevelUUID {
             // Battery Level is a single unsigned byte, 0-100 percent.
-            batteryPercent = data.first.map(Int.init)
+            locked {
+                _batteryRaw = [UInt8](data)
+                _batteryPercent = data.first.map(Int.init)
+            }
             return
         }
-        notifications.append([UInt8](data))
+        locked { _notifications.append([UInt8](data)) }
     }
 
     func peripheral(

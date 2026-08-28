@@ -56,14 +56,13 @@ cp "$OUT/asctl.icns" "$APP/Contents/Resources/asctl.icns"
 
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
-# The bundle launches straight into the GUI; the same binary still takes CLI
-# subcommands when invoked directly.
-cat > "$APP/Contents/MacOS/launch" <<'LAUNCH'
-#!/bin/bash
-exec "$(dirname "$0")/asctl" gui
-LAUNCH
-chmod +x "$APP/Contents/MacOS/launch"
-/usr/libexec/PlistBuddy -c "Set :CFBundleExecutable launch" "$APP/Contents/Info.plist"
+# No wrapper script. CFBundleExecutable must name the binary that actually
+# runs: macOS only treats a process as a bundle's main executable when the two
+# match, and otherwise never reads Contents/Info.plist. That meant the Bluetooth
+# usage description was invisible and TCC killed the app with SIGABRT the first
+# time it touched CoreBluetooth. The binary opens the GUI on its own when it is
+# started from inside a bundle with no arguments.
+/usr/libexec/PlistBuddy -c "Set :CFBundleExecutable asctl" "$APP/Contents/Info.plist"
 
 # Ad-hoc signing keeps the TCC grant stable across rebuilds. Without a stable
 # signature macOS treats each rebuild as a different app and re-prompts.

@@ -1595,6 +1595,21 @@ func commandWatch(_ options: Options) {
 
 // MARK: - Entry point
 
+/// Launched from inside an .app with no arguments? Open the GUI.
+///
+/// The bundle used to point CFBundleExecutable at a wrapper script that ran
+/// `asctl gui`, but a process whose name does not match CFBundleExecutable is
+/// not treated as the bundle's main executable — macOS then never reads
+/// Contents/Info.plist, so the Bluetooth usage description went unseen and TCC
+/// terminated the app the moment it used CoreBluetooth.
+func launchedAsBundledApp() -> Bool {
+    guard CommandLine.arguments.count == 1 else { return false }
+    return Bundle.main.bundleURL.pathExtension == "app"
+        || Bundle.main.bundleIdentifier == "io.github.yourchocomate.asctl"
+}
+
+if launchedAsBundledApp() { runGUI() }
+
 let options = parseArguments(Array(CommandLine.arguments.dropFirst()))
 
 switch options.command {

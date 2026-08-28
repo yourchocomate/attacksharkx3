@@ -43,6 +43,7 @@ struct MenuBarView: View {
             footer
         }
         .frame(width: 260)
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     // MARK: Pieces
@@ -114,9 +115,7 @@ struct MenuBarView: View {
         VStack(alignment: .leading, spacing: 5) {
             label("Battery")
             if let level = state.battery {
-                HStack(spacing: 8) {
-                    BatteryGauge(level: level, available: true, reading: false)
-                }
+                BatteryGauge(level: level, available: true, reading: false)
             } else if state.batteryAvailable {
                 Text(state.batteryReading ? "reading…" : "not read yet")
                     .font(.system(size: 12))

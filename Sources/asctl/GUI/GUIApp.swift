@@ -28,20 +28,35 @@ final class GUIAppDelegate: NSObject, NSApplicationDelegate {
     private var titleTimer: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        makeWindow()
+        installStatusItem()
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// Build the main window.
+    ///
+    /// `isReleasedWhenClosed` defaults to **true**, so AppKit frees an NSWindow
+    /// the moment it is closed. That was harmless while the app quit with its
+    /// last window; once it started living in the menu bar instead, closing the
+    /// window and reopening it sent a message to freed memory and crashed —
+    /// `objc_msgSend` on a dangling pointer from `makeKeyAndOrderFront:`.
+    @discardableResult
+    private func makeWindow() -> NSWindow {
+        if let existing = window { return existing }
+
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1120, height: 760),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false)
+        window.isReleasedWhenClosed = false
         window.title = "asctl — Attack Shark X3"
         window.contentView = NSHostingView(rootView: MainView(state: state))
         window.center()
         window.setFrameAutosaveName("asctl.main")
         window.makeKeyAndOrderFront(nil)
         self.window = window
-
-        installStatusItem()
-        NSApp.activate(ignoringOtherApps: true)
+        return window
     }
 
     /// Closing the window hides the app rather than quitting it.
@@ -62,7 +77,10 @@ final class GUIAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func showWindow() {
-        window?.makeKeyAndOrderFront(nil)
+        // Rebuild rather than assume one survives. Belt and braces alongside
+        // isReleasedWhenClosed: a nil window here should reopen the app, not
+        // silently do nothing.
+        makeWindow().makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
 
@@ -81,15 +99,23 @@ final class GUIAppDelegate: NSObject, NSApplicationDelegate {
         // zero width, so it is present and invisible — indistinguishable from
         // not being created at all. Give it text to fall back on.
         if symbol == nil { item.button?.title = "asctl" }
-        item.isVisible = true
-        // Remember where the user drags it. Without an autosave name the item
-        // returns to the far end of a crowded menu bar on every launch — which
-        // on a notched display means back behind the notch.
-        item.autosaveName = "asctl.statusItem"
 
-        if symbol == nil {
-            FileHandle.standardError.write(Data(
-                "asctl: menu bar icon failed to load\n".utf8))
+        // Order matters here, and getting it wrong makes the icon vanish.
+        //
+        // autosaveName restores the item's saved *visibility* as well as its
+        // position. Setting it after isVisible therefore overrode the value
+        // just assigned: once macOS had recorded the item as hidden — which it
+        // does when the menu bar is too full to place it — every later launch
+        // restored that and the icon never came back.
+        item.autosaveName = "asctl.statusItem"
+        item.isVisible = true
+
+        let visible = item.isVisible
+        if symbol == nil || !visible {
+            let line = "asctl: menu bar item — image "
+                + (symbol == nil ? "missing" : "ok")
+                + ", visible \(visible)\n"
+            FileHandle.standardError.write(Data(line.utf8))
         }
         item.button?.target = self
         item.button?.action = #selector(togglePopover)
@@ -97,13 +123,13 @@ final class GUIAppDelegate: NSObject, NSApplicationDelegate {
 
         let popover = NSPopover()
         popover.behavior = .transient
-        popover.contentSize = NSSize(width: 260, height: 300)
-        popover.contentViewController = NSHostingController(
+        let hosting = NSHostingController(
             rootView: MenuBarView(
                 state: state,
                 onOpen: { [weak self] in self?.closePopover(); self?.openFromMenu() },
                 onSettings: { [weak self] in self?.closePopover(); self?.openSettings() },
                 onQuit: { NSApp.terminate(nil) }))
+        popover.contentViewController = hosting
         self.popover = popover
 
         // The active DPI beside the icon: the one number worth having visible
@@ -131,6 +157,19 @@ final class GUIAppDelegate: NSObject, NSApplicationDelegate {
         if popover.isShown {
             popover.performClose(nil)
         } else {
+            // Size to the content every time it opens.
+            //
+            // A fixed contentSize leaves empty space below short content — the
+            // panel grows and shrinks as the battery and DPI stage become known
+            // — and that padding reads as the popover hanging away from the
+            // menu bar rather than as the popover simply being too tall.
+            if let content = popover.contentViewController?.view {
+                let fitting = content.fittingSize
+                if fitting.height > 1 {
+                    popover.contentSize = NSSize(
+                        width: max(260, fitting.width), height: fitting.height)
+                }
+            }
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             popover.contentViewController?.view.window?.makeKey()
         }

@@ -172,10 +172,18 @@ enum PowerTest {
         var minGap = Double.greatestFiniteMagnitude
         var medianGap = 0.0
         for channel in channels {
-            let gaps = zip(channel.arrivalsNs.dropFirst(), channel.arrivalsNs)
-                .map { Double($0 - $1) / 1_000_000 }
-                .filter { $0 > 0.05 && $0 < 500 }
-                .sorted()
+            // Explicit loop: the chained zip/map/filter form exceeded the
+            // compiler's type-checking budget on another toolchain.
+            var gaps: [Double] = []
+            let arrivals = channel.arrivalsNs
+            if arrivals.count > 1 {
+                gaps.reserveCapacity(arrivals.count - 1)
+                for index in 1..<arrivals.count {
+                    let delta = Double(arrivals[index] - arrivals[index - 1]) / 1_000_000
+                    if delta > 0.05 && delta < 500 { gaps.append(delta) }
+                }
+                gaps.sort()
+            }
             guard !gaps.isEmpty else { continue }
             minGap = min(minGap, gaps[0])
             medianGap = max(medianGap, gaps[gaps.count / 2])
@@ -517,8 +525,12 @@ enum PowerTest {
         let channels = watcher.run(seconds: seconds)
 
         for channel in channels where channel.arrivalsNs.count > 6 {
-            let gaps = zip(channel.arrivalsNs.dropFirst(), channel.arrivalsNs)
-                .map { Double($0 - $1) / 1_000_000 }
+            var gaps: [Double] = []
+            let arrivals = channel.arrivalsNs
+            gaps.reserveCapacity(arrivals.count - 1)
+            for index in 1..<arrivals.count {
+                gaps.append(Double(arrivals[index] - arrivals[index - 1]) / 1_000_000)
+            }
             return Array(gaps.prefix(20))
         }
         return nil

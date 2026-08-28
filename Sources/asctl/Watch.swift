@@ -272,10 +272,20 @@ extension InputWatcher.Channel {
 
     /// Gaps between consecutive reports, in milliseconds.
     var gapsMs: [Double] {
+        // Written as an explicit loop rather than zip/map/filter.
+        //
+        // The chained form type-checks here and blows the compiler's budget on
+        // other toolchains — CI failed with "unable to type-check this
+        // expression in reasonable time". Generic chains whose element types
+        // are all inferred are exactly what that limit is for.
         guard arrivalsNs.count > 1 else { return [] }
-        return zip(arrivalsNs.dropFirst(), arrivalsNs).map {
-            Double($0 &- $1) / 1_000_000.0
+        var gaps: [Double] = []
+        gaps.reserveCapacity(arrivalsNs.count - 1)
+        for index in 1..<arrivalsNs.count {
+            let delta = arrivalsNs[index] - arrivalsNs[index - 1]
+            gaps.append(Double(delta) / 1_000_000)
         }
+        return gaps
     }
 
     /// The polling rate, measured robustly.

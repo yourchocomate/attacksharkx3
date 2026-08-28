@@ -8,6 +8,10 @@ let package = Package(
         .executableTarget(
             name: "asctl",
             path: "Sources/asctl",
+            // The plist is consumed by the linker via -sectcreate below, not by
+            // SwiftPM's resource machinery. Excluding it silences the "unhandled
+            // file" warning without changing what gets linked.
+            exclude: ["Info.plist"],
             linkerSettings: [
                 .linkedFramework("IOKit"),
                 .linkedFramework("CoreFoundation"),

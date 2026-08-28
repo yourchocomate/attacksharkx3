@@ -1,3 +1,4 @@
+import CoreBluetooth
 import Foundation
 
 /// Sending reports on behalf of the GUI.
@@ -71,10 +72,11 @@ enum GUITransport {
             lines.append("error: \(ble.lastError ?? "no Bluetooth peripheral found")")
             return Result(ok: false, lines: lines, acknowledgements: [])
         }
-        let candidates = ble.foundPeripherals.map { $0.0 }
-        let target = candidates.first { ($0.name ?? "").lowercased().contains("mouse") }
-            ?? candidates.first
-        guard let target, ble.connect(target) else {
+        guard let target = ble.foundPeripherals.map({ $0.0 }).first(where: isX3) else {
+            lines.append("error: the mouse was not among the peripherals found")
+            return Result(ok: false, lines: lines, acknowledgements: [])
+        }
+        guard ble.connect(target) else {
             lines.append("error: \(ble.lastError ?? "no FEE3 characteristic")")
             return Result(ok: false, lines: lines, acknowledgements: [])
         }
@@ -101,15 +103,39 @@ enum GUITransport {
         return Result(ok: true, lines: lines, acknowledgements: ble.notifications)
     }
 
+    /// Is this peripheral actually the mouse?
+    ///
+    /// The scan is unfiltered, so it turns up every nearby BLE device. Falling
+    /// back to "whatever answered first" was a real bug: it read GATT 2A19 off
+    /// a stranger's device, which is why the level jumped around between reads
+    /// and could exceed 100. Match the X3 by name or return nothing.
+    static func isX3(_ peripheral: CBPeripheral) -> Bool {
+        let name = (peripheral.name ?? "").lowercased()
+        return name.contains("x3") || name.contains("attack shark")
+    }
+
     /// Battery level, which is only reachable over Bluetooth GATT.
+    ///
+    /// Returns the level plus a diagnostic line naming the peripheral it came
+    /// from and the raw bytes, because a level that looks wrong is almost
+    /// always the wrong device rather than a decoding error, and only the raw
+    /// read distinguishes the two.
     static func readBattery() -> (Int?, String) {
         let ble = BLEConnection()
-        guard ble.discover() else { return (nil, ble.lastError ?? "no peripheral") }
-        let candidates = ble.foundPeripherals.map { $0.0 }
-        let target = candidates.first { ($0.name ?? "").lowercased().contains("mouse") }
-            ?? candidates.first
-        guard let target, ble.connect(target) else { return (nil, ble.lastError ?? "connect failed") }
+        defer { ble.disconnect() }
+
+        guard ble.discover() else { return (nil, ble.lastError ?? "no peripheral found") }
+        let seen = ble.foundPeripherals.map { $0.0.name ?? "(unnamed)" }
+        guard let target = ble.foundPeripherals.map({ $0.0 }).first(where: isX3) else {
+            return (nil, "the mouse was not among: \(seen.joined(separator: ", "))")
+        }
+        guard ble.connect(target) else { return (nil, ble.lastError ?? "connect failed") }
         guard let level = ble.readBattery() else { return (nil, "no battery characteristic") }
-        return (level, "battery \(level)%")
+
+        let source = "\(ble.connectedName ?? "?") 2A19=\(Hex.encode(ble.batteryRaw))"
+        guard (0...100).contains(level) else {
+            return (nil, "implausible reading from \(source) — ignored")
+        }
+        return (level, "battery \(level)% from \(source)")
     }
 }

@@ -65,6 +65,12 @@ final class BLEConnection: NSObject {
     /// device, and the only way to tell is to look at what actually arrived.
     private var _batteryRaw: [UInt8] = []
     var batteryRaw: [UInt8] { locked { _batteryRaw } }
+    /// Every 2A19 arrival this connection, with the time it landed.
+    ///
+    /// A single reading cannot tell a battery level from a counter. The
+    /// sequence can, and only if nothing throws the earlier ones away.
+    private var _batteryHistory: [(ns: UInt64, bytes: [UInt8])] = []
+    var batteryHistory: [(ns: UInt64, bytes: [UInt8])] { locked { _batteryHistory } }
     private(set) var connectedName: String?
 
     private var _poweredOn = false
@@ -240,6 +246,24 @@ final class BLEConnection: NSObject {
     }
 
     /// Read the standard Battery Level characteristic (0-100 percent).
+    /// Turn on notifications for 2A19, which advertises [read,notify].
+    ///
+    /// Only ever read it before. If the device pushes the real level and only
+    /// answers reads with something else, a read-only probe could never tell.
+    @discardableResult
+    func subscribeBattery() -> Bool {
+        guard let peripheral, let characteristic = batteryCharacteristic else {
+            lastError = "this device exposes no 2A19 Battery Level characteristic"
+            return false
+        }
+        guard characteristic.properties.contains(.notify) else {
+            lastError = "2A19 does not support notify"
+            return false
+        }
+        peripheral.setNotifyValue(true, for: characteristic)
+        return true
+    }
+
     func readBattery(timeout: TimeInterval = 5) -> Int? {
         guard let peripheral, let characteristic = batteryCharacteristic else {
             lastError = "this device exposes no 2A19 Battery Level characteristic"
@@ -378,6 +402,8 @@ extension BLEConnection: CBPeripheralDelegate {
             locked {
                 _batteryRaw = [UInt8](data)
                 _batteryPercent = data.first.map(Int.init)
+                _batteryHistory.append(
+                    (ns: DispatchTime.now().uptimeNanoseconds, bytes: [UInt8](data)))
             }
             return
         }

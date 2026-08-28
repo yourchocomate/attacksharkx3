@@ -211,17 +211,18 @@ struct MainView: View {
                             }
                         }
 
-                        HStack {
-                            Button("Refresh") { state.refreshBattery() }
-                                .controlSize(.small)
-                                .disabled(state.batteryReading || !state.batteryAvailable)
-                            Spacer()
+                        if let at = state.batteryAt {
+                            Text("reported \(at, style: .relative) ago")
+                                .font(.system(size: 10))
+                                .foregroundStyle(.secondary)
                         }
 
                         Text(
-                            "Read from GATT 2A19 on the live connection. Each reading "
-                            + "is listed with the raw byte, so a value that moves can "
-                            + "be told apart from a value that is being misread."
+                            "The mouse sends its level when it chooses to; there is no "
+                            + "way to ask for one. Keep the listener running and it "
+                            + "arrives on its own, over Bluetooth or the 2.4 GHz "
+                            + "receiver alike. It comes in ten steps, so 40% means "
+                            + "four bars out of ten rather than a rounded reading."
                         )
                         .font(.system(size: 10))
                         .foregroundStyle(.secondary)

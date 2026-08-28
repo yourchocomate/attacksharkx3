@@ -51,6 +51,10 @@ final class StatusMonitor {
     /// looped, so the second block never got the queue and the first never
     /// noticed it had been superseded.
     private var generation = 0
+    /// Whether the user has asked for a fresh level since the last one arrived.
+    ///
+    /// Nothing can be fetched — the device volunteers its battery or it does
+    /// not — so this only controls whether the UI is told it is still waiting.
     private var wantsBatteryRead = false
     private(set) var connected = false
     private let queue = DispatchQueue(label: "asctl.status", qos: .utility)
@@ -163,50 +167,21 @@ final class StatusMonitor {
         }
         setConnected(true)
 
-        // One *successful* read per connection.
+        // Nothing reads GATT 2A19 any more.
         //
-        // The earlier version set "already read" before knowing whether the
-        // read worked, so a first attempt that came back nil — which happens
-        // when the link is up but the characteristic is not ready yet — left
-        // the gauge blank for the life of the connection with nothing retrying.
-        wantsBatteryRead = true
-        var batteryRead = false
-        var batteryAttempts = 0
-
+        // It sits at the Battery Level UUID but is a counter: it rose by one on
+        // every read and by nothing at all over thirty idle seconds, carried
+        // across disconnects, and climbed past 100 and kept going. macOS shows
+        // "100%" for this mouse by reading the same value and clamping it.
+        //
+        // The real level arrives unprompted as a status event, on this link and
+        // on the 2.4 GHz one alike, which is why it is handled in the loop below
+        // with every other event rather than fetched.
         while running && generation == mine {
             ble.pump(seconds: 1.0)
             for packet in ble.takeNotifications() {
                 guard let event = StatusEvent.parseBLE(packet) else { continue }
                 emit(event, packet)
-            }
-            if wantsBatteryRead && !batteryRead {
-                batteryAttempts += 1
-                if let level = ble.readBattery(), (0...100).contains(level) {
-                    let raw = ble.batteryRaw
-                    let name = ble.connectedName ?? "?"
-                    batteryRead = true
-                    wantsBatteryRead = false
-                    DispatchQueue.main.async { self.onBattery?(level, raw, name) }
-                } else if batteryAttempts >= 8 {
-                    // Give up after a few passes rather than reading forever —
-                    // each read is a round trip and re-reading 2A19 on one link
-                    // returns a climbing value anyway.
-                    wantsBatteryRead = false
-                    DispatchQueue.main.async {
-                        // Say *why*. readBattery returns nil both when the
-                        // 2A19 characteristic was never discovered and when a
-                        // read timed out, and those need different fixes.
-                        let reason = ble.lastError ?? "read timed out"
-                        let chars = ble.describeServices()
-                            .filter { $0.contains("2A19") }
-                            .joined(separator: "; ")
-                        self.onBatteryFailed?(
-                            "\(reason) after \(batteryAttempts) attempts"
-                            + (chars.isEmpty
-                               ? " — 2A19 was not among the discovered characteristics"
-                               : " — 2A19 is present: \(chars)"))
-                    }
-                }
             }
             if ble.isDisconnected {
                 setConnected(false)

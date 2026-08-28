@@ -66,10 +66,15 @@ final class AppState: ObservableObject {
         }
     }
 
-    /// Battery lives on GATT characteristic 2A19, so it is readable over
-    /// Bluetooth and nowhere else. The 2.4 GHz status event that would carry it
-    /// is decoded but has never once been observed firing.
-    var batteryAvailable: Bool { bluetoothPresent }
+    /// The battery arrives as a status event, on whichever link is up.
+    ///
+    /// It used to be read from GATT 2A19 and so was offered on Bluetooth only.
+    /// That characteristic turned out to be a read counter — one higher per
+    /// read, unmoved by thirty idle seconds, still climbing past 100 — so
+    /// nothing is read now. The device volunteers a level the same way it
+    /// volunteers a DPI-stage change, and that reaches us on 2.4 GHz and
+    /// Bluetooth alike.
+    var batteryAvailable: Bool { !devices.isEmpty || bluetoothPresent }
 
     // MARK: DPI and sensor — report 0x04
 
@@ -298,50 +303,30 @@ final class AppState: ObservableObject {
     }
 
     @Published var batteryReading = false
+    /// When the last level arrived. Shown because these are pushed at the
+    /// device's discretion, so a reading can be hours old with nothing wrong.
+    @Published var batteryAt: Date?
     /// The last few readings, kept visible. A level that behaves oddly is far
     /// easier to diagnose from a short history than from one number.
     @Published var batteryHistory: [(level: Int, raw: String, at: Date)] = []
 
+    /// There is nothing to refresh.
+    ///
+    /// The level cannot be requested — no command asks for one, and the
+    /// characteristic that looked like it answered was counting reads. All the
+    /// app can do is keep the listener up and show the last level the mouse
+    /// sent, with the time it arrived so a stale one is obvious.
     func refreshBattery() {
-        guard batteryAvailable else {
-            note("battery is only readable over Bluetooth")
+        guard monitorRunning else {
+            note("battery: start the listener first — the level is only ever pushed")
             return
         }
-        guard !batteryReading else { return }
-        batteryReading = true
-        // A refresh has to be a *new link*, not another read on the current
-        // one. Reading 2A19 twice on one connection returns a value one higher
-        // each time (measured: 4B 4C 4D 4E 4F), so re-reading in place produces
-        // a number that climbs with clicks and tracks nothing.
-        if monitorConnected {
-            note("reconnecting for a fresh battery reading…")
-            restartMonitor()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 8) {
-                self.batteryReading = false
-            }
-            return
-        }
-        oneShotBattery()
-    }
-
-    /// Read on a connection of our own. Used when no listener holds the link.
-    private func oneShotBattery() {
-        batteryReading = true
-        DispatchQueue.global().async {
-            let (level, message) = GUITransport.readBattery()
-            DispatchQueue.main.async {
-                if let level {
-                    self.recordBattery(level, raw: message, name: "")
-                } else {
-                    self.note("battery: \(message)")
-                }
-                self.batteryReading = false
-            }
-        }
+        note("battery: nothing to request; waiting for the mouse to report")
     }
 
     func recordBattery(_ level: Int, raw: String, name: String) {
         battery = level
+        batteryAt = Date()
         batteryHistory.insert((level, raw, Date()), at: 0)
         if batteryHistory.count > 4 { batteryHistory.removeLast() }
         batteryReading = false
@@ -433,15 +418,27 @@ final class AppState: ObservableObject {
                     self.baseline.activeStage = reported - 1
                     self.note("device switched to DPI stage \(reported)")
                 }
+            case StatusEvent.Code.battery.rawValue,
+                 StatusEvent.Code.batteryLevel.rawValue:
+                // The level the device volunteers, on either transport. It is
+                // reported in ten steps, so 40% means "4 of 10" and not a
+                // reading rounded down from something finer.
+                guard let percent = event.batteryPercent else {
+                    self.note("battery event \(Hex.encode(raw)) — level out of range")
+                    break
+                }
+                let asleep = event.isAsleep ?? false
+                self.recordBattery(
+                    percent, raw: "event \(Hex.encode(raw))",
+                    name: self.link.rawValue)
+                self.note("battery \(percent)%\(asleep ? " (asleep)" : "")")
             case StatusEvent.Code.writeAck.rawValue:
                 break  // already logged by the send path
             default:
                 self.note("event \(Hex.encode(raw)) — \(event.description)")
             }
         }
-        monitor.onBattery = { [weak self] level, raw, name in
-            self?.recordBattery(level, raw: "\(name) 2A19=\(Hex.encode(raw))", name: name)
-        }
+
         monitor.onRetry = { [weak self] attempt, delay in
             guard let self else { return }
             // Only mention the first couple, or a mouse that is simply switched
@@ -460,11 +457,9 @@ final class AppState: ObservableObject {
             guard let self else { return }
             self.monitorConnected = up
             self.note(up ? "listener connected" : "listener disconnected")
-            // If the listener could not take the link, fall back to a one-shot
-            // read so the gauge still gets a value.
-            if !up && self.batteryAvailable && self.battery == nil {
-                self.oneShotBattery()
-            }
+            // No fallback read to make here. The level only ever arrives on
+            // the listener's own event stream, so a lost link means waiting for
+            // it to come back, not fetching from somewhere else.
         }
         monitor.start(link: link)
         monitorRunning = true

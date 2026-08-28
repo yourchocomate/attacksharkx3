@@ -117,16 +117,13 @@ struct MenuBarView: View {
             if let level = state.battery {
                 BatteryGauge(level: level, available: true, reading: false)
             } else if state.batteryAvailable {
-                Text(state.batteryReading ? "reading…" : "not read yet")
+                Text("waiting for the mouse to report")
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
             } else {
-                Text("Bluetooth only")
+                Text("no mouse")
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
-                Text("no battery report exists on the 2.4 GHz path")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.tertiary)
             }
         }
     }

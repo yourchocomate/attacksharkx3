@@ -67,8 +67,9 @@ struct SettingsView: View {
                     note("The mouse volunteers a small set of events — a DPI-button "
                         + "press among them. That is the only piece of device state "
                         + "this app can read rather than assume, because the "
-                        + "configuration protocol is write-only. The listener also "
-                        + "carries the battery level on Bluetooth.")
+                        + "configuration protocol is write-only. The battery level "
+                        + "arrives the same way, on either link — it cannot be "
+                        + "requested, so the listener has to be running to catch it.")
                 }
 
                 group("Data") {
@@ -121,7 +122,7 @@ struct SettingsView: View {
                         why: "Configuring over the 2.4 GHz receiver or the USB cable.")
                     permission(
                         "Bluetooth", granted: state.batteryAvailable && state.monitorConnected,
-                        why: "Configuring over GATT, and reading the battery.")
+                        why: "Configuring over GATT when the mouse is on Bluetooth.")
                     permission(
                         "Accessibility", granted: state.scrollAccessibilityGranted,
                         why: "Intercepting wheel events for the direction fix.")

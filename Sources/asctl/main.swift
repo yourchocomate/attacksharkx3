@@ -108,6 +108,7 @@ COMMANDS
   ble write <hex>          Write a config buffer to the FEE3 characteristic
   ble battery              Read the battery level over Bluetooth (GATT 2A19)
   ble listen [seconds]     Listen on the FEE4 notify characteristic
+  battery-probe [seconds]  Listen for the battery level the device volunteers
   blediag [seconds]        Dump GATT, five battery reads, and every notify
                            packet while you press buttons. Use this rather
                            than guessing at a battery or event problem.
@@ -1634,6 +1635,8 @@ case "power-test":
         print("       asctl power-test wake <minutes>")
     }
 case "blediag": commandBLEDiag(options)
+case "battery-probe":
+  exit(BatteryProbe.run(seconds: TimeInterval(options.positionals.first.flatMap(Int.init) ?? 120)))
 case "light": commandLight(options)
 case "light-probe": LightProbe.run(options)
 case "power": commandPower(options)

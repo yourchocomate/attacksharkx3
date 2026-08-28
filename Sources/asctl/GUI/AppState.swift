@@ -32,10 +32,50 @@ final class AppState: ObservableObject {
         }
     }
 
-    var isReady: Bool { link == .bluetooth || configurableDevice != nil }
+    var isReady: Bool { link == .bluetooth ? bluetoothPresent : configurableDevice != nil }
+
+    /// Whether the mouse is currently visible on each transport.
+    ///
+    /// The X3 is on one link at a time — the 2.4G/OFF/BT slider underneath
+    /// decides which — so exactly one of these is normally true, and that is
+    /// what makes auto-selection safe rather than a guess.
+    var receiverPresent: Bool {
+        devices.contains { $0.canConfigure && $0.vendorID == 0x1D57 }
+    }
+
+    var bluetoothPresent: Bool {
+        devices.contains {
+            $0.vendorID == 0x045E && $0.transport.lowercased().contains("bluetooth")
+        }
+    }
+
+    /// Pick the transport the mouse is actually on.
+    ///
+    /// Preference goes to the receiver when both are somehow visible: it is the
+    /// full-feature path, and it does not suffer the dead-cursor firmware fault.
+    /// Battery is the opposite — only Bluetooth can report it.
+    func detectLink() {
+        if receiverPresent {
+            if link != .receiver { note("detected the 2.4 GHz receiver / USB cable") }
+            link = .receiver
+        } else if bluetoothPresent {
+            if link != .bluetooth { note("detected Bluetooth") }
+            link = .bluetooth
+        } else {
+            note("no mouse found — check the 2.4G / OFF / BT slider underneath")
+        }
+    }
+
+    /// Battery lives on GATT characteristic 2A19, so it is readable over
+    /// Bluetooth and nowhere else. The 2.4 GHz status event that would carry it
+    /// is decoded but has never once been observed firing.
+    var batteryAvailable: Bool { bluetoothPresent }
 
     // MARK: DPI and sensor — report 0x04
 
+    /// One of the report's **eight fixed slots**. The wire addresses slots by
+    /// index and carries enablement only as a bitmask, so a slot keeps its
+    /// index whether or not it is switched on.
     struct Stage: Identifiable {
         let id = UUID()
         var dpi: Int
@@ -43,17 +83,49 @@ final class AppState: ObservableObject {
         var colour: Color
     }
 
-    @Published var stages: [Stage] = [
-        Stage(dpi: 800, enabled: true, colour: .red),
-        Stage(dpi: 1600, enabled: true, colour: .green),
-        Stage(dpi: 3200, enabled: true, colour: .blue),
-        Stage(dpi: 6400, enabled: true, colour: .yellow),
-        Stage(dpi: 12800, enabled: false, colour: .purple),
-        Stage(dpi: 16000, enabled: false, colour: .cyan),
-        Stage(dpi: 20000, enabled: false, colour: .orange),
-        Stage(dpi: 26000, enabled: false, colour: .white),
+    /// The stock configuration of this unit, as observed on the hardware:
+    /// five stages, 800 through 26000.
+    ///
+    /// Note this is **not** the vendor's reset table, which has six stages
+    /// (800/1600/2400/3200/5000/26000) and a different palette. The device
+    /// ships with its own defaults; `DpiReport.factorySlots` holds the
+    /// vendor's, available from the presets menu.
+    static let stockStages: [Stage] = [
+        Stage(dpi: 800, enabled: true, colour: .blue),
+        Stage(dpi: 1600, enabled: true, colour: .cyan),
+        Stage(dpi: 3200, enabled: true, colour: .green),
+        Stage(dpi: 5000, enabled: true, colour: .yellow),
+        Stage(dpi: 26000, enabled: true, colour: .red),
+        Stage(dpi: 0, enabled: false, colour: .purple),
+        Stage(dpi: 0, enabled: false, colour: .orange),
+        Stage(dpi: 0, enabled: false, colour: .white),
     ]
-    @Published var activeStage = 0
+
+    static var vendorFactoryStages: [Stage] {
+        DpiReport.factorySlots.map {
+            Stage(dpi: $0.dpi, enabled: $0.enabled,
+                  colour: Color(.sRGB,
+                                red: Double($0.colour.r) / 255,
+                                green: Double($0.colour.g) / 255,
+                                blue: Double($0.colour.b) / 255))
+        }
+    }
+
+    @Published var stages: [Stage] = AppState.vendorFactoryStages
+    @Published var activeStage = DpiReport.factoryActiveSlot
+    @Published var showAdvancedDPI = false
+
+    func loadVendorFactoryStages() {
+        stages = AppState.vendorFactoryStages
+        activeStage = DpiReport.factoryActiveSlot
+        note("loaded the vendor factory DPI table — 6 stages")
+    }
+
+    func loadStockStages() {
+        stages = AppState.stockStages
+        activeStage = 0
+        note("loaded this unit's stock DPI table (5 stages)")
+    }
 
     @Published var liftOff2mm = false
     @Published var rippleControl = false
@@ -72,18 +144,32 @@ final class AppState: ObservableObject {
 
     // MARK: Buttons — report 0x08
 
-    /// Physical positions, in the order the report expects them. Entry 5 is the
-    /// mode-switch button; remapping it costs Bluetooth channel switching until
-    /// the factory table is restored, so the UI marks it.
+    /// Report entries, named by the physical button each one drives.
+    ///
+    /// Established by experiment, not by reading the factory table: a distinct
+    /// letter was written onto each entry and the mouse was watched. Entries 6
+    /// and 9-18 produced **no observable button on this unit** — the factory
+    /// table assigns them, but nothing on this shell triggers them.
+    /// Names follow the vendor's own product diagram.
     static let buttonNames = [
-        "Left click", "Right click", "Wheel click", "DPI button", "Mode switch",
-        "DPI down", "Forward", "Backward", "Mode switch (2)",
-        "Button 10", "Button 11", "Button 12", "Button 13", "Button 14",
-        "Button 15", "Button 16", "Wheel down", "Wheel up",
+        "Left Button", "Right Button", "Middle Button",
+        "DPI Switch", "Mode Key",
+        "(no button)", "Forward", "Backward",
+        "(no button)", "(no button)", "(no button)", "(no button)",
+        "(no button)", "(no button)", "(no button)", "(no button)",
+        "(no button)", "(no button)",
     ]
+
+    /// The seven entries that drive something you can press.
+    static let physicalButtons = [0, 1, 2, 3, 4, 6, 7]
+
+    /// Entry 5 cycles the Bluetooth identity. Remapping it costs channel
+    /// switching until the factory table is restored.
+    static let modeButtonEntry = 4
 
     @Published var buttonActions: [String] = AppState.factoryActionNames
 
+    /// The vendor's own reset table, decoded from its defaults routine.
     static let factoryActionNames = [
         "left", "right", "middle", "dpi_cycle", "mode_switch",
         "dpi_down", "forward", "backward", "mode_switch",
@@ -135,10 +221,63 @@ final class AppState: ObservableObject {
         return actionChoices.first { $0.key == key }?.label ?? key
     }
 
+    // MARK: What the editor is showing
+
+    /// Where the values on screen came from.
+    ///
+    /// This has to be stated, because **the protocol is write-only**: there is
+    /// no report that asks the mouse what it is set to, so the editor can never
+    /// simply mirror the device. It shows one of three things, and says which.
+    enum Provenance {
+        case defaults        // the vendor factory table
+        case lastApplied     // what asctl last wrote, restored from disk
+        case edited          // changed since it was loaded or applied
+
+        var caption: String {
+            switch self {
+            case .defaults:
+                return "Showing the vendor factory table. The mouse cannot be read, "
+                    + "so this is a starting point, not its current state."
+            case .lastApplied:
+                return "Showing the last configuration asctl wrote to this mouse."
+            case .edited:
+                return "Edited — not yet written to the mouse."
+            }
+        }
+    }
+
+    @Published var provenance: Provenance = .defaults
+
+    private static var lastAppliedURL: URL {
+        Profile.directory.deletingLastPathComponent()
+            .appendingPathComponent("last-applied.json")
+    }
+
+    /// Remember every successful write, so the next launch shows what the mouse
+    /// was actually left set to rather than a generic default.
+    func recordApplied() {
+        guard let data = try? JSONEncoder().encode(currentProfile()) else { return }
+        try? data.write(to: AppState.lastAppliedURL)
+        provenance = .lastApplied
+    }
+
+    func restoreLastApplied() {
+        guard let data = try? Data(contentsOf: AppState.lastAppliedURL),
+              let profile = try? JSONDecoder().decode(Profile.self, from: data)
+        else { return }
+        apply(profile: profile)
+        provenance = .lastApplied
+        note("restored the last configuration asctl wrote")
+    }
+
     // MARK: Log
 
     @Published var log: [String] = ["asctl ready."]
     @Published var busy = false
+
+    func markEdited() {
+        if provenance != .edited { provenance = .edited }
+    }
 
     func note(_ line: String) {
         log.append(line)
@@ -147,26 +286,210 @@ final class AppState: ObservableObject {
 
     // MARK: Refresh
 
-    func refreshDevices() {
+    func refreshDevices(autoSelect: Bool = true) {
         devices = HID.attackSharkDevices()
-        if devices.isEmpty {
-            note("no Attack Shark interface found")
-        } else {
-            note("found \(devices.count) interface(s)")
-        }
+        if autoSelect { detectLink() }
     }
 
+    @Published var batteryReading = false
+    /// The last few readings, kept visible. A level that behaves oddly is far
+    /// easier to diagnose from a short history than from one number.
+    @Published var batteryHistory: [(level: Int, raw: String, at: Date)] = []
+
     func refreshBattery() {
-        busy = true
-        note("reading battery over Bluetooth…")
+        guard batteryAvailable else {
+            note("battery is only readable over Bluetooth")
+            return
+        }
+        guard !batteryReading else { return }
+        batteryReading = true
+        // A refresh has to be a *new link*, not another read on the current
+        // one. Reading 2A19 twice on one connection returns a value one higher
+        // each time (measured: 4B 4C 4D 4E 4F), so re-reading in place produces
+        // a number that climbs with clicks and tracks nothing.
+        if monitorConnected {
+            note("reconnecting for a fresh battery reading…")
+            restartMonitor()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 8) {
+                self.batteryReading = false
+            }
+            return
+        }
+        oneShotBattery()
+    }
+
+    /// Read on a connection of our own. Used when no listener holds the link.
+    private func oneShotBattery() {
+        batteryReading = true
         DispatchQueue.global().async {
             let (level, message) = GUITransport.readBattery()
             DispatchQueue.main.async {
-                self.battery = level
-                self.note(message)
-                self.busy = false
+                if let level {
+                    self.recordBattery(level, raw: message, name: "")
+                } else {
+                    self.note("battery: \(message)")
+                }
+                self.batteryReading = false
             }
         }
+    }
+
+    func recordBattery(_ level: Int, raw: String, name: String) {
+        battery = level
+        batteryHistory.insert((level, raw, Date()), at: 0)
+        if batteryHistory.count > 4 { batteryHistory.removeLast() }
+        batteryReading = false
+    }
+
+    // MARK: Live device state
+
+    let monitor = StatusMonitor()
+    @Published var monitorRunning = false
+    @Published var monitorConnected = false
+    /// The active DPI stage the *device* last reported, which is the only piece
+    /// of its configuration it ever volunteers.
+    @Published var deviceActiveStage: Int?
+
+    func startMonitor() {
+        guard !monitorRunning else { return }
+        monitor.onEvent = { [weak self] event, raw in
+            guard let self else { return }
+            switch event.code {
+            case StatusEvent.Code.dpiStage.rawValue:
+                // The device numbers stages from 1; the editor indexes from 0.
+                let reported = Int(event.value)
+                guard reported >= 1 else { break }
+                self.deviceActiveStage = reported - 1
+                if self.activeStage != reported - 1 {
+                    self.activeStage = reported - 1
+                    self.note("device switched to DPI stage \(reported)")
+                }
+            case StatusEvent.Code.writeAck.rawValue:
+                break  // already logged by the send path
+            default:
+                self.note("event \(Hex.encode(raw)) — \(event.description)")
+            }
+        }
+        monitor.onBattery = { [weak self] level, raw, name in
+            self?.recordBattery(level, raw: "\(name) 2A19=\(Hex.encode(raw))", name: name)
+        }
+        monitor.onConnectionChange = { [weak self] up in
+            guard let self else { return }
+            self.monitorConnected = up
+            self.note(up ? "listener connected" : "listener disconnected")
+            // If the listener could not take the link, fall back to a one-shot
+            // read so the gauge still gets a value.
+            if !up && self.batteryAvailable && self.battery == nil {
+                self.oneShotBattery()
+            }
+        }
+        monitor.start(link: link)
+        monitorRunning = true
+    }
+
+    func stopMonitor() {
+        monitor.stop()
+        monitorRunning = false
+    }
+
+    func restartMonitor() {
+        stopMonitor()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { self.startMonitor() }
+    }
+
+    // MARK: Profiles
+
+    @Published var profileNames: [String] = []
+    @Published var newProfileName = ""
+
+    func refreshProfiles() { profileNames = Profile.names() }
+
+    /// Snapshot the whole editable state.
+    ///
+    /// This matters more here than in most apps: the protocol is **write-only**,
+    /// so the device can never be asked what it is set to. A saved profile is
+    /// the only record of a configuration that exists anywhere.
+    func currentProfile() -> Profile {
+        var profile = Profile()
+        profile.dpiStages = stages.map { $0.dpi }
+        profile.stageEnabled = stages.map { $0.enabled }
+        profile.activeStage = activeStage
+        profile.colours = stages.map {
+            let c = rgb($0.colour)
+            return [Int(c.r), Int(c.g), Int(c.b)]
+        }
+        profile.pollingRateHz = pollingRate
+        profile.buttons = buttonActions
+        profile.liftOff2mm = liftOff2mm
+        profile.rippleControl = rippleControl
+        profile.angleSnap = angleSnap
+        profile.motionSync = motionSync
+        profile.sleepMinutes = sleepMinutes
+        profile.deepSleepMinutes = deepSleepMinutes
+        profile.debounceMs = debounceMs
+        return profile
+    }
+
+    func saveProfile(named name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        do {
+            try currentProfile().save(as: trimmed)
+            note("saved profile \"\(trimmed)\"")
+            newProfileName = ""
+            refreshProfiles()
+        } catch {
+            note("error: could not save profile — \(error.localizedDescription)")
+        }
+    }
+
+    /// Load a profile into the editor **without** writing to the device, so the
+    /// change can be reviewed before it is applied.
+    func loadProfile(named name: String) {
+        guard let profile = try? Profile.load(name) else {
+            note("error: could not read profile \"\(name)\"")
+            return
+        }
+        apply(profile: profile)
+        provenance = .edited
+        note("loaded profile \"\(name)\" into the editor — not yet written")
+    }
+
+    func apply(profile: Profile) {
+        if let values = profile.dpiStages {
+            let enabled = profile.stageEnabled
+            let colours = profile.colours
+            stages = (0..<8).map { index in
+                let dpi = index < values.count ? values[index] : 0
+                let on = enabled.flatMap { index < $0.count ? $0[index] : false }
+                    ?? (index < values.count && dpi > 0)
+                var colour = Color.white
+                if let colours, index < colours.count, colours[index].count == 3 {
+                    let c = colours[index]
+                    colour = Color(.sRGB,
+                                   red: Double(c[0]) / 255,
+                                   green: Double(c[1]) / 255,
+                                   blue: Double(c[2]) / 255)
+                }
+                return Stage(dpi: dpi, enabled: on, colour: colour)
+            }
+        }
+        if let value = profile.activeStage { activeStage = value }
+        if let value = profile.pollingRateHz { pollingRate = value }
+        if let value = profile.buttons, value.count == 18 { buttonActions = value }
+        if let value = profile.liftOff2mm { liftOff2mm = value }
+        if let value = profile.rippleControl { rippleControl = value }
+        if let value = profile.angleSnap { angleSnap = value }
+        if let value = profile.motionSync { motionSync = value }
+        if let value = profile.sleepMinutes { sleepMinutes = value }
+        if let value = profile.deepSleepMinutes { deepSleepMinutes = value }
+        if let value = profile.debounceMs { debounceMs = value }
+    }
+
+    func deleteProfile(named name: String) {
+        try? FileManager.default.removeItem(at: Profile.url(name))
+        note("deleted profile \"\(name)\"")
+        refreshProfiles()
     }
 
     // MARK: Report building
@@ -180,19 +503,30 @@ final class AppState: ObservableObject {
         )
     }
 
+    /// Build report 0x04 from the eight slots as they stand.
+    ///
+    /// Slots are passed through by index — never compacted to the enabled ones.
+    /// Compacting was the original bug here: switching off a middle stage moved
+    /// every stage above it down, and the device accepted the result without
+    /// complaint because it was still a well-formed report.
     func dpiReport() -> [UInt8] {
-        let enabled = stages.filter { $0.enabled }
-        let list = enabled.isEmpty ? [stages[0]] : enabled
-        return DpiReport.build(
-            stages: list.map { $0.dpi },
-            activeStage: min(activeStage, list.count - 1),
-            colours: list.map { rgb($0.colour) },
+        DpiReport.buildSlots(
+            stages.map {
+                DpiReport.Slot(dpi: $0.dpi, enabled: $0.enabled, colour: rgb($0.colour))
+            },
+            activeSlot: activeStage,
             toggles: DpiReport.Toggles(
                 liftOffDistance2mm: liftOff2mm,
                 rippleControl: rippleControl,
                 angleSnap: angleSnap,
                 motionSync: motionSync
             ).bytes)
+    }
+
+    /// The active slot must be one that is switched on, or the mouse lands on a
+    /// stage the user cannot cycle back to.
+    var activeStageIsEnabled: Bool {
+        stages.indices.contains(activeStage) && stages[activeStage].enabled
     }
 
     func pollingReport() -> [UInt8]? { PollingRate.report(hz: pollingRate) }
@@ -225,6 +559,7 @@ final class AppState: ObservableObject {
             let result = GUITransport.send(reports, over: link, dryRun: dryRun)
             DispatchQueue.main.async {
                 for line in result.lines { self.note(line) }
+                if result.ok && !dryRun { self.recordApplied() }
                 self.busy = false
             }
         }

@@ -11,23 +11,49 @@ import SwiftUI
 struct MainView: View {
     @StateObject var state = AppState()
     @State private var selectedButton = 0
+    @State private var showUnmapped = false
 
     var body: some View {
         VStack(spacing: 0) {
             header
             Divider()
+            provenanceBar
+            Divider()
             HStack(alignment: .top, spacing: 0) {
                 leftColumn.frame(width: 300)
                 Divider()
-                centreColumn.frame(minWidth: 280)
+                centreColumn.frame(minWidth: 380)
                 Divider()
                 rightColumn.frame(width: 380)
             }
             Divider()
             footer
         }
-        .frame(minWidth: 1060, minHeight: 720)
-        .onAppear { state.refreshDevices() }
+        .frame(minWidth: 1180, minHeight: 780)
+        .onAppear {
+            state.refreshDevices()
+            state.refreshProfiles()
+            state.restoreLastApplied()
+            state.startMonitor()
+        }
+        .onChange(of: state.link) { _ in state.restartMonitor() }
+    }
+
+    private var provenanceBar: some View {
+        HStack(spacing: 7) {
+            Image(systemName: state.provenance == .edited
+                  ? "pencil.circle.fill" : "info.circle")
+                .font(.system(size: 11))
+                .foregroundStyle(state.provenance == .edited ? Color.orange : .secondary)
+            Text(state.provenance.caption)
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+            Spacer()
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 5)
+        .background(state.provenance == .edited
+                    ? Color.orange.opacity(0.10) : Color.primary.opacity(0.03))
     }
 
     // MARK: Header
@@ -40,13 +66,15 @@ struct MainView: View {
             Divider().frame(height: 20)
 
             Picker("", selection: $state.link) {
-                ForEach(GUITransport.Link.allCases) { link in
-                    Text(link.rawValue).tag(link)
+                ForEach(GUITransport.Link.allCases) { option in
+                    Text(option.rawValue)
+                        .tag(option)
                 }
             }
             .pickerStyle(.segmented)
             .labelsHidden()
             .frame(width: 220)
+            .help("Detected automatically. Override only if you know better.")
 
             Circle()
                 .fill(state.isReady ? Color.green : Color.orange)
@@ -63,6 +91,22 @@ struct MainView: View {
                 .font(.system(size: 11))
                 .help("Print the exact bytes without writing anything to the device")
 
+            HStack(spacing: 4) {
+                Circle()
+                    .fill(state.monitorConnected ? Color.green
+                          : (state.monitorRunning ? Color.orange : Color.secondary))
+                    .frame(width: 6, height: 6)
+                Toggle("Listen", isOn: Binding(
+                    get: { state.monitorRunning },
+                    set: { $0 ? state.startMonitor() : state.stopMonitor() }
+                ))
+                .toggleStyle(.switch)
+                .font(.system(size: 11))
+            }
+            .help(state.monitorConnected
+                ? "Connected — DPI-button presses sync the active stage here"
+                : "Not connected to the device's event channel")
+
             Button("Rescan") { state.refreshDevices() }
             Button("Apply all") { state.applyEverything() }
                 .keyboardShortcut("s")
@@ -78,10 +122,20 @@ struct MainView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 8) {
                 Section("Button Setting", expanded: true) {
-                    VStack(spacing: 4) {
-                        ForEach(0..<AppState.buttonNames.count, id: \.self) { index in
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(AppState.physicalButtons, id: \.self) { index in
                             buttonRow(index)
                         }
+
+                        Text(
+                            "The report carries 18 entries; these seven are the ones "
+                            + "shown to drive a button on this shell. The rest are still "
+                            + "transmitted, unchanged."
+                        )
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 2)
+
                         HStack {
                             Button("Restore factory") { state.restoreFactoryButtons() }
                             Spacer()
@@ -89,25 +143,102 @@ struct MainView: View {
                                 .disabled(state.busy || !state.isReady)
                         }
                         .padding(.top, 4)
+
                         if !state.buttonsHaveLeftClick {
-                            Text("At least one button must stay a left click.")
+                            Text("At least one entry must stay a left click.")
                                 .font(.system(size: 10))
                                 .foregroundStyle(.red)
                         }
                     }
                 }
 
-                Section("Power", subtitle: state.battery.map { "\($0)%" }, expanded: true) {
+                Section("Battery", expanded: true) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        BatteryGauge(
+                            level: state.battery,
+                            available: state.batteryAvailable,
+                            reading: state.batteryReading)
+
+                        if state.batteryHistory.count > 1 {
+                            VStack(alignment: .leading, spacing: 1) {
+                                ForEach(Array(state.batteryHistory.enumerated()), id: \.offset) {
+                                    _, entry in
+                                    Text("\(entry.at, style: .time)  \(entry.level)%  \(entry.raw)")
+                                        .font(.system(size: 9, design: .monospaced))
+                                        .foregroundStyle(.tertiary)
+                                        .lineLimit(1)
+                                }
+                            }
+                        }
+
+                        HStack {
+                            Button("Refresh") { state.refreshBattery() }
+                                .controlSize(.small)
+                                .disabled(state.batteryReading || !state.batteryAvailable)
+                            Spacer()
+                        }
+
+                        Text(
+                            "Read from GATT 2A19 on the live connection. Each reading "
+                            + "is listed with the raw byte, so a value that moves can "
+                            + "be told apart from a value that is being misread."
+                        )
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                    }
+                }
+
+                Section("Profiles", subtitle: "\(state.profileNames.count)", expanded: true) {
                     VStack(alignment: .leading, spacing: 6) {
-                        if let battery = state.battery {
-                            ProgressView(value: Double(battery), total: 100)
-                        } else {
-                            Text("Battery is only readable over Bluetooth.")
+                        if state.profileNames.isEmpty {
+                            Text("No saved profiles yet.")
                                 .font(.system(size: 10))
                                 .foregroundStyle(.secondary)
                         }
-                        Button("Read battery") { state.refreshBattery() }
-                            .disabled(state.busy)
+                        ForEach(state.profileNames, id: \.self) { name in
+                            HStack(spacing: 6) {
+                                Text(name).font(.system(size: 11))
+                                Spacer()
+                                Button("Load") { state.loadProfile(named: name) }
+                                    .controlSize(.small)
+                                    .help("Load into the editor without writing")
+                                Button("Apply") {
+                                    state.loadProfile(named: name)
+                                    state.applyEverything()
+                                }
+                                .controlSize(.small)
+                                .disabled(state.busy || !state.isReady)
+                                Button {
+                                    state.deleteProfile(named: name)
+                                } label: {
+                                    Image(systemName: "trash")
+                                }
+                                .controlSize(.small)
+                                .buttonStyle(.borderless)
+                            }
+                        }
+
+                        Divider().padding(.vertical, 2)
+
+                        HStack(spacing: 6) {
+                            TextField("New profile name", text: $state.newProfileName)
+                                .textFieldStyle(.roundedBorder)
+                                .font(.system(size: 11))
+                                .onSubmit { state.saveProfile(named: state.newProfileName) }
+                            Button("Save") { state.saveProfile(named: state.newProfileName) }
+                                .controlSize(.small)
+                                .disabled(state.newProfileName
+                                    .trimmingCharacters(in: .whitespaces).isEmpty)
+                        }
+
+                        Text(
+                            "Profiles are files on this Mac, replayed through the normal "
+                            + "reports — the device's own slots are unused by this product. "
+                            + "Because the protocol is write-only, a saved profile is the "
+                            + "only record of a configuration that exists anywhere."
+                        )
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
                     }
                 }
 
@@ -144,7 +275,9 @@ struct MainView: View {
                 .frame(width: 16)
             Text(AppState.buttonNames[index])
                 .font(.system(size: 11))
-                .frame(width: 100, alignment: .leading)
+                .foregroundStyle(
+                    AppState.physicalButtons.contains(index) ? .primary : .secondary)
+                .frame(width: 104, alignment: .leading)
             Picker("", selection: Binding(
                 get: { state.buttonActions[index] },
                 set: { state.buttonActions[index] = $0 }
@@ -166,20 +299,34 @@ struct MainView: View {
             RoundedRectangle(cornerRadius: 4)
                 .fill(selectedButton == index ? Color.accentColor.opacity(0.14) : .clear))
         .onTapGesture { selectedButton = index }
-        .help(index == 4 || index == 8
-            ? "The mode-switch button. Remapping it costs Bluetooth channel switching."
-            : "")
+        .help(index == AppState.modeButtonEntry
+            ? "The mode button cycles the Bluetooth identity. Remapping it costs "
+                + "channel switching until you restore the factory mapping."
+            : AppState.buttonNames[index])
     }
 
     // MARK: Centre — the mouse
 
     private var centreColumn: some View {
-        VStack {
-            MouseDiagram(selected: $selectedButton) { index in
-                AppState.label(forAction: state.buttonActions[index])
+        ScrollView {
+            VStack(spacing: 10) {
+                MouseDiagram(selected: $selectedButton) { index in
+                    AppState.label(forAction: state.buttonActions[index])
+                }
+                .padding(.top, 10)
+
+                Text(
+                    "The 2.4G / OFF / BT slider, the sensor, the indicator LEDs and "
+                    + "the Type-C port are shown for orientation. None of them is "
+                    + "remappable."
+                )
+                .font(.system(size: 9))
+                .foregroundStyle(.tertiary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 24)
+                .padding(.bottom, 12)
             }
-            .padding(16)
-            Spacer()
+            .frame(maxWidth: .infinity)
         }
     }
 
@@ -188,32 +335,67 @@ struct MainView: View {
     private var rightColumn: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 8) {
-                Section("DPI Setting", expanded: true) {
+                Section("DPI Setting", subtitle: "\(state.stages.filter { $0.enabled }.count) stages", expanded: true) {
                     VStack(alignment: .leading, spacing: 6) {
                         ForEach(state.stages.indices, id: \.self) { index in
                             DPIStageRow(
                                 index: index,
                                 stage: $state.stages[index],
                                 activeStage: $state.activeStage,
-                                enabledCount: state.stages.filter { $0.enabled }.count)
+                                advanced: state.showAdvancedDPI,
+                                confirmed: state.deviceActiveStage == index)
                         }
-                        HStack {
-                            Text("Active stage").font(.system(size: 11))
-                            Picker("", selection: $state.activeStage) {
-                                ForEach(0..<max(1, state.stages.filter { $0.enabled }.count), id: \.self) {
-                                    Text("\($0 + 1)").tag($0)
+
+                        HStack(spacing: 5) {
+                            if let reported = state.deviceActiveStage {
+                                Circle().fill(Color.green).frame(width: 6, height: 6)
+                                Text("Mouse reports stage \(reported + 1) active")
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(.secondary)
+                            } else {
+                                Circle()
+                                    .strokeBorder(Color.orange, lineWidth: 1)
+                                    .frame(width: 6, height: 6)
+                                Text(
+                                    "Active stage unconfirmed — press the DPI button "
+                                    + "on the mouse to sync"
+                                )
+                                .font(.system(size: 10))
+                                .foregroundStyle(.orange)
+                            }
+                            Spacer()
+                        }
+
+                        if !state.activeStageIsEnabled {
+                            Text("The active stage is switched off — pick one that is on.")
+                                .font(.system(size: 10))
+                                .foregroundStyle(.orange)
+                        }
+
+                        HStack(spacing: 8) {
+                            Toggle("Advanced", isOn: $state.showAdvancedDPI)
+                                .toggleStyle(.switch)
+                                .font(.system(size: 11))
+                                .help("Show a slider per stage. Values snap to 50 either way.")
+                            Spacer()
+                            Menu("Presets") {
+                                Button("Vendor factory table — 6 stages") {
+                                    state.loadVendorFactoryStages()
+                                }
+                                Button("This unit's stock — 5 stages") {
+                                    state.loadStockStages()
                                 }
                             }
-                            .labelsHidden()
-                            .frame(width: 70)
-                            Spacer()
+                            .frame(width: 92)
                             Button("Apply") { state.applyDPI() }
                                 .disabled(state.busy || !state.isReady)
                         }
+
                         Text(
                             "Report 0x04 is atomic: DPI, the four sensor toggles below "
-                            + "and every stage colour are written together, and none of "
-                            + "them can be read back first."
+                            + "and every stage colour go together, and none can be read "
+                            + "back first. The eight slots are addressed by index — "
+                            + "switching one off does not renumber the rest."
                         )
                         .font(.system(size: 10))
                         .foregroundStyle(.secondary)
@@ -221,13 +403,12 @@ struct MainView: View {
                 }
 
                 Section("Polling Rate", subtitle: "\(state.pollingRate) Hz", expanded: true) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Picker("", selection: $state.pollingRate) {
-                            ForEach(PollingRate.supported, id: \.self) { Text("\($0)").tag($0) }
-                        }
-                        .pickerStyle(.segmented)
-                        .labelsHidden()
+                    VStack(alignment: .leading, spacing: 10) {
+                        PollingRateDial(selection: $state.pollingRate)
                         HStack {
+                            Text("The wire carries a divider against 1000 Hz.")
+                                .font(.system(size: 10))
+                                .foregroundStyle(.secondary)
                             Spacer()
                             Button("Apply") { state.applyPolling() }
                                 .disabled(state.busy || !state.isReady)

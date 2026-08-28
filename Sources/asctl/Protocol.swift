@@ -605,7 +605,7 @@ enum LightReport {
     /// |---|---|---|
     /// | 9 | sleep time | 1-60 min |
     /// | 4/5 | deep sleep time | 1-60 min |
-    /// | 10 | key response time (debounce) | 2-25 ms |
+    /// | 10 | key response time (debounce) | 2-25, in **2 ms units** |
     ///
     /// Deep sleep is split across two bytes: its high nibble into byte 4 and
     /// its low nibble into byte 5's high nibble.
@@ -623,6 +623,19 @@ enum LightReport {
     /// `modeByteOverride` replaces byte 3 outright. It exists for `light-probe`,
     /// which tests alternative encodings of the mode field; normal callers leave
     /// it nil and get the encoding the vendor software uses.
+    /// The debounce field counts **2 ms units**, not milliseconds.
+    ///
+    /// Measured, not inferred: sweeping the value and timing the fastest clicks
+    /// puts the floor at 2.00x the configured number, on the press duration and
+    /// on the gap between presses alike, across four measurements within 1 ms.
+    /// Per-edge blanking — the obvious alternative — predicts a 1x floor on
+    /// both, so the data rules it out.
+    ///
+    /// The vendor's "2-25 ms" slider therefore spans 4-50 ms of real debounce.
+    /// This value stays raw so it matches what the vendor writes; callers that
+    /// show it to a user should show `effectiveDebounceMs` too.
+    static func effectiveDebounceMs(_ wireValue: Int) -> Int { wireValue * 2 }
+
     static func build(
         mode: Mode,
         red: UInt8 = 255, green: UInt8 = 0, blue: UInt8 = 0,

@@ -92,6 +92,9 @@ struct SliderRow: View {
     let range: ClosedRange<Double>
     let unit: String
     @Binding var value: Int
+    /// Extra text after the value, for a field whose wire units are not the
+    /// units the user thinks in.
+    var detail: ((Int) -> String)? = nil
 
     var body: some View {
         HStack {
@@ -104,6 +107,12 @@ struct SliderRow: View {
             Text("\(value) \(unit)")
                 .font(.system(size: 11, design: .monospaced))
                 .frame(width: 60, alignment: .trailing)
+            if let detail {
+                Text(detail(value))
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 74, alignment: .leading)
+            }
         }
     }
 }

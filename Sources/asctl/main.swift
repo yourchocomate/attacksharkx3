@@ -44,7 +44,8 @@ COMMANDS
   power [opts]             Power management and key debounce (report 0x05).
                              --sleep 1-60       sleep time, minutes
                              --deepsleep 1-60   deep sleep time, minutes
-                             --debounce 2-25    key response time, ms
+                             --debounce 2-25    key response time, in 2ms units
+                                                (25 = 50ms of real debounce)
                            Report 0x05 is atomic: it also carries the lighting
                            mode/colour/brightness/speed, so those are rewritten
                            too. Pass the light options to control them.

@@ -446,14 +446,21 @@ struct MainView: View {
                                   value: $state.sleepMinutes)
                         SliderRow(title: "Deep sleep time", range: 1...60, unit: "min",
                                   value: $state.deepSleepMinutes)
-                        SliderRow(title: "Key response time", range: 2...25, unit: "ms",
-                                  value: $state.debounceMs)
+                        SliderRow(
+                            title: "Key response time", range: 2...25, unit: "",
+                            value: $state.debounceMs,
+                            detail: { "= \(LightReport.effectiveDebounceMs($0)) ms" })
                         HStack {
                             Spacer()
                             Button("Apply") { state.applyPower() }
                                 .disabled(state.busy || !state.isReady)
                         }
-                        Text("Accepted by the device; the resulting behaviour has not been measured.")
+                        Text(
+                            "Key response time counts 2 ms units — measured on "
+                            + "hardware, so the effective debounce is twice the "
+                            + "number. The sleep timers are accepted by the device "
+                            + "but their behaviour has not been measured."
+                        )
                             .font(.system(size: 10))
                             .foregroundStyle(.secondary)
                     }

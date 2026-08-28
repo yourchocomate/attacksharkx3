@@ -47,7 +47,7 @@ by the device. That distinction matters here more than usual — see
 | Profiles | **host-side** (`profile save/apply/list`) — the device's own slots are unused by this product |
 | Device discovery, framing, raw feature-report I/O | working |
 | Checksum — 16-bit sum, big-endian | decoded, two implementations cross-checked |
-| Key debounce | **verified on hardware** (`power-test debounce`) — the setting truncates the shortest press against a floor |
+| Key debounce | **verified on hardware** (`power-test debounce`) — and the field counts **2 ms units**, so the vendor's "2-25" slider is really 4-50 ms |
 | Sleep / deep sleep | mapped with ranges; writes accepted, **behaviour unmeasured** (`power`, `power-test sleep`) |
 | Scroll direction vs macOS natural scrolling | implemented, **not yet exercised** (`scroll`) |
 | Battery over 2.4 GHz | decoded; the event has **never been observed firing** |
@@ -214,8 +214,12 @@ profile_cycle button_off`, plus `key:<combo>`, `macro:<n>`, `raw:<hh.hh.hh>`.
 asctl power --sleep 10 --deepsleep 20 --debounce 5
 ```
 
-Ranges: sleep and deep sleep 1–60 minutes, debounce 2–25 ms. Accepted by the
-device; the resulting behaviour has not been measured.
+Ranges: sleep and deep sleep 1–60 minutes, debounce 2–25.
+
+**Debounce counts 2 ms units**, measured on hardware — `--debounce 25` gives
+50 ms of real debounce. The value stays raw so it matches what the vendor
+writes. The sleep timers are accepted by the device but their behaviour has not
+been measured.
 
 ### Profiles
 

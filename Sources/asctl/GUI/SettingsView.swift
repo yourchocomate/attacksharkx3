@@ -38,6 +38,15 @@ struct SettingsView: View {
                     }
                 }
 
+                group("Menu bar") {
+                    note("asctl puts an icon in the menu bar showing the active DPI, "
+                        + "with the battery and DPI ladder behind it.")
+                    note("If you cannot see it, the menu bar is full — on a notched "
+                        + "display the overflow is hidden behind the notch. Cmd-drag "
+                        + "any menu bar icon to reorder them, and drag asctl to the "
+                        + "left of the notch. Its position is remembered.")
+                }
+
                 group("Device listener") {
                     HStack(spacing: 6) {
                         Circle()

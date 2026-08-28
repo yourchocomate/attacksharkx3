@@ -72,9 +72,25 @@ final class GUIAppDelegate: NSObject, NSApplicationDelegate {
 
     private func installStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        item.button?.image = NSImage(
+        let symbol = NSImage(
             systemSymbolName: "computermouse", accessibilityDescription: "asctl")
-        item.button?.imagePosition = .imageLeading
+        symbol?.isTemplate = true
+        item.button?.image = symbol
+        item.button?.imagePosition = symbol == nil ? .noImage : .imageLeading
+        // A status item whose image failed to load and whose title is empty has
+        // zero width, so it is present and invisible — indistinguishable from
+        // not being created at all. Give it text to fall back on.
+        if symbol == nil { item.button?.title = "asctl" }
+        item.isVisible = true
+        // Remember where the user drags it. Without an autosave name the item
+        // returns to the far end of a crowded menu bar on every launch — which
+        // on a notched display means back behind the notch.
+        item.autosaveName = "asctl.statusItem"
+
+        if symbol == nil {
+            FileHandle.standardError.write(Data(
+                "asctl: menu bar icon failed to load\n".utf8))
+        }
         item.button?.target = self
         item.button?.action = #selector(togglePopover)
         statusItem = item

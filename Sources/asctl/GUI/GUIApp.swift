@@ -21,6 +21,11 @@ extension Notification.Name {
 @available(macOS 12.0, *)
 final class GUIAppDelegate: NSObject, NSApplicationDelegate {
     private var window: NSWindow?
+    /// One state object for the whole app. The menu bar popover shows the same
+    /// live values as the window, which is only true if they share this.
+    let state = AppState()
+    private var popover: NSPopover?
+    private var titleTimer: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let window = NSWindow(
@@ -29,7 +34,7 @@ final class GUIAppDelegate: NSObject, NSApplicationDelegate {
             backing: .buffered,
             defer: false)
         window.title = "asctl — Attack Shark X3"
-        window.contentView = NSHostingView(rootView: MainView())
+        window.contentView = NSHostingView(rootView: MainView(state: state))
         window.center()
         window.setFrameAutosaveName("asctl.main")
         window.makeKeyAndOrderFront(nil)
@@ -69,25 +74,53 @@ final class GUIAppDelegate: NSObject, NSApplicationDelegate {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.button?.image = NSImage(
             systemSymbolName: "computermouse", accessibilityDescription: "asctl")
-        let menu = NSMenu()
-        menu.addItem(
-            withTitle: "Mouse", action: #selector(openFromMenu), keyEquivalent: "1")
-            .target = self
-        menu.addItem(
-            withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
-            .target = self
-        menu.addItem(.separator())
-        menu.addItem(
-            withTitle: "Reveal config folder", action: #selector(revealConfig),
-            keyEquivalent: "")
-            .target = self
-        menu.addItem(.separator())
-        menu.addItem(
-            withTitle: "Quit asctl", action: #selector(NSApplication.terminate(_:)),
-            keyEquivalent: "q")
-        item.menu = menu
+        item.button?.imagePosition = .imageLeading
+        item.button?.target = self
+        item.button?.action = #selector(togglePopover)
         statusItem = item
+
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.contentSize = NSSize(width: 260, height: 300)
+        popover.contentViewController = NSHostingController(
+            rootView: MenuBarView(
+                state: state,
+                onOpen: { [weak self] in self?.closePopover(); self?.openFromMenu() },
+                onSettings: { [weak self] in self?.closePopover(); self?.openSettings() },
+                onQuit: { NSApp.terminate(nil) }))
+        self.popover = popover
+
+        // The active DPI beside the icon: the one number worth having visible
+        // without clicking anything, and the only device value that is reported
+        // rather than assumed.
+        let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
+            self?.refreshStatusTitle()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        titleTimer = timer
+        refreshStatusTitle()
     }
+
+    private func refreshStatusTitle() {
+        guard let button = statusItem?.button else { return }
+        if let index = state.deviceActiveStage, state.stages.indices.contains(index) {
+            button.title = " \(state.stages[index].dpi)"
+        } else {
+            button.title = ""
+        }
+    }
+
+    @objc private func togglePopover() {
+        guard let popover, let button = statusItem?.button else { return }
+        if popover.isShown {
+            popover.performClose(nil)
+        } else {
+            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+            popover.contentViewController?.view.window?.makeKey()
+        }
+    }
+
+    private func closePopover() { popover?.performClose(nil) }
 
     @objc func openFromMenu() {
         showWindow()
@@ -152,6 +185,11 @@ private func installMenuBar() {
         withTitle: "Settings", action: #selector(GUIAppDelegate.openSettings),
         keyEquivalent: "2")
     settingsEntry.target = NSApp.delegate
+    viewMenu.addItem(.separator())
+    let revealEntry = viewMenu.addItem(
+        withTitle: "Reveal Config Folder", action: #selector(GUIAppDelegate.revealConfig),
+        keyEquivalent: "")
+    revealEntry.target = NSApp.delegate
     viewItem.submenu = viewMenu
     mainMenu.addItem(viewItem)
 

@@ -9,7 +9,9 @@ import SwiftUI
 /// connection type, and the Bluetooth tools the vendor has no equivalent for.
 @available(macOS 12.0, *)
 struct MainView: View {
-    @StateObject var state = AppState()
+    /// Owned by the app delegate, so the menu bar popover and this window show
+    /// the same live state rather than two independent copies.
+    @ObservedObject var state: AppState
     @State private var selectedButton = 0
     @State private var showUnmapped = false
 

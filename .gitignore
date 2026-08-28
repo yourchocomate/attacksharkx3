@@ -1,6 +1,8 @@
 # Build products
 .build/
+dist/
 build/
+dist/
 .swiftpm/
 *.o
 *.dSYM/

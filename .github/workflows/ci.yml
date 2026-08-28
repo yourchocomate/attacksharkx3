@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        runner: [macos-14, macos-13]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: swift build -c release
+
+      # No hardware on a runner, so this is the only check that can catch a
+      # report which is well-formed but wrong — the failure this protocol
+      # punishes hardest, because the device acknowledges it either way.
+      - name: Verify generated payloads
+        run: .build/release/asctl selftest
+
+      - name: Build the app bundle
+        run: ./Scripts/make-app.sh build

@@ -100,6 +100,36 @@ swift build -c release
 cp .build/release/asctl /usr/local/bin/     # optional
 ```
 
+### Install from a disk image
+
+```bash
+Scripts/make-dmg.sh
+open build/asctl-0.1.0.dmg
+```
+
+Drag `asctl.app` onto Applications. The image also carries `uninstall.sh` and a
+README, because an app dragged into place gives no hint that it later writes a
+login agent.
+
+It is **ad-hoc signed, not notarised**, so the first launch needs right-click ▸
+Open — a double-click will be refused. Notarising needs a paid Developer ID.
+
+### Uninstalling
+
+```bash
+Scripts/uninstall.sh              # asks whether to keep your profiles
+Scripts/uninstall.sh --keep-data  # remove the app, keep ~/.config/asctl
+Scripts/uninstall.sh --all        # remove everything
+```
+
+It removes the app, both launch agents and the window preferences, and lists
+what it found first rather than claiming to remove things that were never there.
+
+Two things it cannot do, and says so: the Privacy & Security entries have to be
+removed by hand, because macOS offers no way to revoke them programmatically;
+and settings already written to the mouse stay there, because the protocol has
+no readback and no factory reset.
+
 ### The app bundle
 
 `asctl gui` works from a terminal, but macOS attributes privacy permissions to
@@ -359,7 +389,9 @@ implemented here" from "implemented and I sent it wrong".
 
 ```
 Scripts/make-app.sh      Wraps the binary in asctl.app
+Scripts/make-dmg.sh      Builds a drag-to-install disk image
 Scripts/make-icon.swift  Draws the app icon
+Scripts/uninstall.sh     Removes the app, agents and (optionally) your data
 Sources/asctl/
   GUI/                   SwiftUI interface (asctl gui)
     MainView.swift         Three-column window, mirroring the vendor layout

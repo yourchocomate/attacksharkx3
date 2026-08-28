@@ -14,13 +14,22 @@ cd "$(dirname "$0")/.."
 OUT="${1:-build}"
 APP="$OUT/asctl.app"
 
-echo "building release binary…"
-swift build -c release
+# A prebuilt binary can be supplied instead of building here. CI uses this to
+# hand over a universal binary lipo'd from two native builds — cross-building
+# both architectures in one pass needs full Xcode, which not every machine has.
+if [ -n "${ASCTL_BINARY:-}" ]; then
+    echo "using the supplied binary: $ASCTL_BINARY"
+    BINARY="$ASCTL_BINARY"
+else
+    echo "building release binary…"
+    swift build -c release
 
-# SwiftPM does not treat Info.plist as a build input — it is linked in via
-# -sectcreate — so a stale binary can survive a plist edit. Force the relink.
-rm -f .build/release/asctl
-swift build -c release
+    # SwiftPM does not treat Info.plist as a build input — it is linked in via
+    # -sectcreate — so a stale binary can survive a plist edit. Force the relink.
+    rm -f .build/release/asctl
+    swift build -c release
+    BINARY=".build/release/asctl"
+fi
 
 echo "rendering the app icon…"
 ICONSET="$OUT/asctl.iconset"
@@ -34,7 +43,7 @@ echo "assembling $APP"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
-cp .build/release/asctl "$APP/Contents/MacOS/asctl"
+cp "$BINARY" "$APP/Contents/MacOS/asctl"
 cp Sources/asctl/Info.plist "$APP/Contents/Info.plist"
 cp "$OUT/asctl.icns" "$APP/Contents/Resources/asctl.icns"
 

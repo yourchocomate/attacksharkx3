@@ -21,7 +21,18 @@ import Foundation
 /// device through the same six reports. This does the same thing.
 struct Profile: Codable {
     var dpiStages: [Int]?
+    /// **Zero-based** index of the active slot.
+    ///
+    /// Stated because it was ambiguous: `asctl profile save --active` takes a
+    /// 1-based number from the user, and the GUI holds a 0-based index. Storing
+    /// whichever the caller happened to have meant the same file meant
+    /// different things depending on who wrote it. The file format is 0-based;
+    /// the CLI converts at its boundary.
     var activeStage: Int?
+    /// Per-slot enablement. Report 0x04 addresses eight slots by index and
+    /// carries enablement as a bitmask, so a profile that stored only the
+    /// enabled stages would not round-trip a gap in the middle.
+    var stageEnabled: [Bool]?
     var colours: [[Int]]?
     var pollingRateHz: Int?
     var buttons: [String]?

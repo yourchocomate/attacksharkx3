@@ -365,6 +365,88 @@ enum DpiReport {
     static func dpi(forWireValue wire: UInt16) -> Int {
         (Int(wire) + 1) * dpiStep
     }
+    /// One of the eight fixed DPI slots the report carries.
+    struct Slot {
+        var dpi: Int
+        var enabled: Bool
+        var colour: (r: UInt8, g: UInt8, b: UInt8)
+    }
+
+    /// The factory table, decoded from the vendor's reset-to-defaults routine.
+    ///
+    /// DPI is stored as `dpi / 50` and the colour as a COLORREF-style dword
+    /// whose **low byte is red** — the wire takes the dword's bytes in memory
+    /// order, so the literal `0x0000FF` in the binary is red, not blue.
+    /// Six slots are enabled and the active stage is slot 1 (1600 DPI).
+    static let factorySlots: [Slot] = [
+        Slot(dpi: 800, enabled: true, colour: (255, 0, 0)),        // red
+        Slot(dpi: 1600, enabled: true, colour: (0, 255, 0)),       // green
+        Slot(dpi: 2400, enabled: true, colour: (0, 0, 255)),       // blue
+        Slot(dpi: 3200, enabled: true, colour: (255, 255, 0)),     // yellow
+        Slot(dpi: 5000, enabled: true, colour: (0, 255, 255)),     // cyan
+        Slot(dpi: 26000, enabled: true, colour: (255, 0, 255)),    // magenta
+        Slot(dpi: 0, enabled: false, colour: (255, 64, 0)),        // orange
+        Slot(dpi: 0, enabled: false, colour: (255, 255, 255)),     // white
+    ]
+    static let factoryActiveSlot = 1
+
+    /// Build report 0x04 from eight **fixed slots**, exactly as the vendor does.
+    ///
+    /// This is the difference that matters: the wire has eight slots addressed
+    /// by index, and whether a slot is active is carried *only* by the bitmask
+    /// in byte 5. A disabled slot still transmits its DPI and its colour.
+    /// Compacting the enabled stages into the low slots — which `build(stages:)`
+    /// does, because that is the CLI's contract — silently renumbers every
+    /// stage the moment a middle one is switched off.
+    ///
+    /// A slot whose DPI is below one step encodes as `-1`, which the vendor
+    /// detects and leaves as zero in both planes rather than writing 0xFF.
+    static func buildSlots(
+        _ slots: [Slot],
+        activeSlot: Int,
+        toggles: (UInt8, UInt8, UInt8, UInt8) = (0, 0, 0, 0),
+        profile: UInt8 = 1
+    ) -> [UInt8] {
+        precondition(slots.count == maxStages, "the report has exactly \(maxStages) slots")
+
+        var report = [UInt8](repeating: 0, count: totalLength)
+        report[0] = reportID
+        report[1] = UInt8(totalLength)
+        report[2] = profile
+        report[3] = toggles.0
+        report[4] = toggles.1
+        report[6] = toggles.2
+        report[7] = toggles.3
+
+        var mask: UInt8 = 0
+        for (index, slot) in slots.enumerated() where slot.enabled {
+            mask |= (1 << UInt8(index))
+        }
+        report[5] = mask
+
+        for (index, slot) in slots.enumerated() {
+            let stored = slot.dpi / dpiStep
+            guard stored >= 1 else { continue }  // vendor skips a negative value
+            let wire = UInt16(clamping: stored - 1)
+            report[8 + index] = UInt8(truncatingIfNeeded: wire)
+            report[16 + index] = UInt8(truncatingIfNeeded: wire >> 8)
+        }
+
+        report[24] = UInt8(clamping: activeSlot + 1)
+
+        for (index, slot) in slots.enumerated() {
+            report[25 + index * 3] = slot.colour.r
+            report[26 + index * 3] = slot.colour.g
+            report[27 + index * 3] = slot.colour.b
+        }
+
+        report[49] = 0x01
+        let sum = X3Report.checksum(payload: report[3...49])
+        report[50] = sum.high
+        report[51] = sum.low
+        return report
+    }
+
     static func build(
         stages: [Int],
         activeStage: Int = 0,
@@ -680,6 +762,21 @@ enum StatusEvent {
         return Event(
             code: UInt16(bytes[2]) << 8 | UInt16(bytes[1]),
             value: UInt16(bytes[4]) << 8 | UInt16(bytes[3])
+        )
+    }
+
+    /// The same event over Bluetooth, where FEE4 notifications carry the four
+    /// payload bytes **without** the leading report ID.
+    ///
+    /// Confirmed by the write acknowledgements: a GATT write comes back as
+    /// `10 50 00 0C`, which under this decoding is code 0x5010 with the
+    /// acknowledged report ID in the value's high byte — exactly what the
+    /// 2.4 GHz channel reports as `03 10 50 00 0C`.
+    static func parseBLE(_ bytes: [UInt8]) -> Event? {
+        guard bytes.count >= 4 else { return nil }
+        return Event(
+            code: UInt16(bytes[1]) << 8 | UInt16(bytes[0]),
+            value: UInt16(bytes[3]) << 8 | UInt16(bytes[2])
         )
     }
 }

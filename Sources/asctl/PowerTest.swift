@@ -37,8 +37,12 @@ enum PowerTest {
 
             For each setting you will get \(Int(seconds)) seconds. Click the LEFT
             button as fast and as *briefly* as you can — flick it, do not hold
-            it. The measurement is the shortest press, not the average one, so a
-            few very fast taps matter more than many ordinary ones.
+            it. You do not need superhuman speed: what matters is whether your
+            fastest taps hit a wall, not how fast they are.
+
+            Keep the mouse moving very slightly while you click. It only reports
+            when something changes, and continuous reporting is what gives the
+            measurement its resolution.
 
             """)
 
@@ -56,11 +60,12 @@ enum PowerTest {
             print("   settled. Click now, fast and brief, for \(Int(seconds))s…")
             Thread.sleep(forTimeInterval: 1.5)
 
-            let (durations, gaps, resolution) = collectClicks(
+            let (durations, gaps, minGap, medianGap) = collectClicks(
                 seconds: seconds, options: options)
             results.append((ms, durations, gaps))
-            resolutions.append(resolution)
-            printClickStats(durations: durations, gaps: gaps, resolution: resolution)
+            resolutions.append(minGap)
+            printClickStats(
+                durations: durations, gaps: gaps, minGap: minGap, medianGap: medianGap)
             if ms != settings.last { print("\n   pausing 3s\n"); Thread.sleep(forTimeInterval: 3) }
         }
 
@@ -80,48 +85,68 @@ enum PowerTest {
 
         let resolution = resolutions.max() ?? 0
         let separation = Double(results[1].ms - results[0].ms)
-        if resolution > separation / 2 {
+
+        print(String(format: "  coarsest sampling seen:          %6.1f ms", resolution))
+
+        if resolution > separation / 3 {
             print(String(format: """
 
-                  UNRESOLVABLE. Input reports arrive every %.1f ms, so press
-                  durations are quantised to that step — the observed values
-                  land on multiples of it. The two settings differ by %.0f ms,
-                  which this sampling rate cannot separate.
-
-                  Re-run over the 2.4 GHz receiver at 1000 Hz, where reports
-                  arrive every 1 ms:
-
-                      asctl pollrate 1000
-                      asctl power-test debounce
-
-                  Bluetooth samples far too slowly for a millisecond-scale
-                  measurement, whatever the debounce setting is doing.
+                  UNRESOLVABLE. Even at its fastest, this run sampled every
+                  %.1f ms, and the two settings differ by %.0f ms. Re-run over
+                  the 2.4 GHz receiver after `asctl pollrate 1000`, and keep the
+                  mouse moving slightly so it reports continuously.
                 """, resolution, separation))
             return
         }
 
-        let floor = Double(results[1].ms)
-        if lowMin < floor - 3 && highMin >= floor - 3 {
+        // A debounce floor does not shift the distribution, it truncates it:
+        // the fastest presses pile up against the limit instead of spreading
+        // out. Comparing the *shape* near the minimum separates that from a
+        // user who simply clicked more slowly the second time.
+        func spread(_ values: [Double]) -> Double {
+            let head = values.sorted().prefix(5)
+            guard let low = head.first, let high = head.last else { return 0 }
+            return high - low
+        }
+        let lowSpread = spread(results[0].durations)
+        let highSpread = spread(results[1].durations)
+
+        print(String(format: "  spread of the five shortest:     %6.1f ms at %d ms, "
+                     + "%.1f ms at %d ms",
+                     lowSpread, results[0].ms, highSpread, results[1].ms))
+
+        let ratio = highMin / Double(results[1].ms)
+        let walled = highSpread < lowSpread / 2 && highMin > lowMin * 1.5
+
+        if walled {
+            print(String(format: """
+
+                  CONFIRMED — key debounce is applied.
+
+                  At %d ms the fastest presses pile up at %.1f ms within a
+                  %.1f ms spread, while at %d ms they spread over %.1f ms and
+                  reach %.1f ms. A setting that merely changed nothing would
+                  leave both distributions the same shape; truncation at the
+                  bottom is what a floor looks like.
+
+                  The floor sits at %.2f times the configured value, which
+                  suggests the debounce is applied to both edges — the release
+                  cannot register until one interval after the press, and the
+                  next press not until one after the release.
+                """, results[1].ms, highMin, highSpread,
+                     results[0].ms, lowSpread, lowMin, ratio))
+        } else if lowMin >= Double(results[1].ms) {
             print("""
 
-              CONFIRMED. Presses shorter than the high setting occurred only at
-              the low setting, which is exactly what a debounce floor does.
-            """)
-        } else if lowMin >= floor - 3 {
-            print("""
-
-              INCONCLUSIVE — no tap was faster than \(Int(floor)) ms even at the
-              low setting, so the floor was never tested. Try again with
-              sharper flicks, or compare 2 ms against 25 ms only if you can
-              produce presses under 25 ms.
-            """)
+                  INCONCLUSIVE — no press was faster than the high setting even
+                  at the low one, so the floor was never reached.
+                """)
         } else {
             print("""
 
-              NO EFFECT MEASURED. Presses shorter than the high setting occurred
-              at *both* settings, so the device is not applying the debounce
-              value — or is applying it somewhere this cannot see.
-            """)
+                  NO EFFECT MEASURED. The two distributions have the same shape
+                  near the minimum, so nothing suggests the value is applied.
+                """)
         }
     }
 
@@ -129,25 +154,31 @@ enum PowerTest {
     /// the gaps between presses.
     private static func collectClicks(
         seconds: Double, options: Options
-    ) -> (durations: [Double], gaps: [Double], resolutionMs: Double) {
+    ) -> (durations: [Double], gaps: [Double], minGapMs: Double, medianGapMs: Double) {
         let devices = candidateDevices(options).filter { $0.maxInputReportSize > 0 }
-        guard !devices.isEmpty else { return ([], [], 0) }
+        guard !devices.isEmpty else { return ([], [], 0, 0) }
 
         let watcher = InputWatcher(devices: devices, keepSamples: 0, quiet: true)
         let channels = watcher.run(seconds: seconds)
 
         // A press duration cannot be measured more finely than the interval
-        // between input reports: the button edge is only visible when a report
-        // carries it. This is the measurement's resolution, and comparing two
-        // settings closer together than this is meaningless.
-        var resolution = 0.0
+        // between input reports. The statistic that matters is the **minimum**
+        // gap, not the median: the median is dominated by how much the mouse
+        // happened to be moved during the window, so a run with less movement
+        // looks like a slower device. Using the median here produced a false
+        // "unresolvable" on a run that was sampling at 1 ms.
+        var minGap = Double.greatestFiniteMagnitude
+        var medianGap = 0.0
         for channel in channels {
             let gaps = zip(channel.arrivalsNs.dropFirst(), channel.arrivalsNs)
                 .map { Double($0 - $1) / 1_000_000 }
-                .filter { $0 > 0.05 && $0 < 100 }
+                .filter { $0 > 0.05 && $0 < 500 }
                 .sorted()
-            if !gaps.isEmpty { resolution = max(resolution, gaps[gaps.count / 2]) }
+            guard !gaps.isEmpty else { continue }
+            minGap = min(minGap, gaps[0])
+            medianGap = max(medianGap, gaps[gaps.count / 2])
         }
+        if minGap == .greatestFiniteMagnitude { minGap = 0 }
 
         var durations: [Double] = []
         var gaps: [Double] = []
@@ -168,18 +199,20 @@ enum PowerTest {
                 }
             }
         }
-        return (durations, gaps, resolution)
+        return (durations, gaps, minGap, medianGap)
     }
 
     private static func printClickStats(
-        durations: [Double], gaps: [Double], resolution: Double
+        durations: [Double], gaps: [Double], minGap: Double, medianGap: Double
     ) {
         guard !durations.isEmpty else {
             print("   no clicks captured")
             return
         }
-        print(String(format: "   report interval %.1f ms — the finest difference "
-                     + "this run can resolve", resolution))
+        print(String(
+            format: "   report interval: fastest %.1f ms, typical %.1f ms "
+                + "(the fastest is what limits resolution)",
+            minGap, medianGap))
         let sorted = durations.sorted()
         print(String(
             format: "   %d presses   shortest %.1f ms   median %.1f ms   longest %.1f ms",

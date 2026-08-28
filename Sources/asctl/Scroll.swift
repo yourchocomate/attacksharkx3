@@ -1,3 +1,4 @@
+import ApplicationServices
 import CoreGraphics
 import Foundation
 
@@ -36,9 +37,18 @@ enum ScrollController {
     /// Backed by the `com.apple.swipescrolldirection` global preference, which
     /// is what the Trackpad and Mouse panes both write.
     static var macOSNaturalScrolling: Bool {
-        if let value = UserDefaults.standard.object(forKey: "com.apple.swipescrolldirection") {
-            return (value as? NSNumber)?.boolValue ?? true
-        }
+        // Read the global domain directly rather than through UserDefaults.
+        //
+        // UserDefaults caches, and the obvious way to force a re-read —
+        // removeObject on the key — does not invalidate anything: it writes a
+        // *removal* into this process's own domain, which then shadows the
+        // global value. The read then falls through to the "absent" default of
+        // true, and a tap keyed off it silently stops inverting a couple of
+        // seconds after starting.
+        CFPreferencesAppSynchronize(kCFPreferencesAnyApplication)
+        let value = CFPreferencesCopyAppValue(
+            "com.apple.swipescrolldirection" as CFString, kCFPreferencesAnyApplication)
+        if let number = value as? NSNumber { return number.boolValue }
         // Absent means the factory default, which is natural scrolling on.
         return true
     }
@@ -52,15 +62,58 @@ enum ScrollController {
         }
     }
 
-    /// Run the event tap until interrupted. Never returns under normal use.
-    static func run(_ desired: ScrollDirection) {
-        let invert = shouldInvert(desired)
-        guard invert else {
-            print("Nothing to do: macOS is already producing "
-                + "\(desired == .natural ? "natural" : "traditional") scrolling for the mouse.")
-            print("This command would only intercept events if the two disagreed.")
-            return
+    /// Whether the callback should currently flip events.
+    ///
+    /// A C function pointer cannot capture, so this has to be global — but it
+    /// also has to be *live*. The first version decided once at startup, which
+    /// is wrong for something that runs from login onwards: toggling macOS
+    /// natural scrolling while the agent is running would leave it inverting in
+    /// the wrong direction, and the user would have to know to restart it.
+    fileprivate static var invertNow = false
+    /// Log every event the inverting callback touches.
+    fileprivate static var verbose = false
+
+    /// Re-read the preference and update `invertNow`.
+    ///
+    /// Cheap, but not cheap enough to do per scroll event — a timer drives it.
+    static func refreshInversion(_ desired: ScrollDirection) {
+        let wanted = shouldInvert(desired)
+        if wanted != invertNow {
+            invertNow = wanted
+            print("macOS natural scrolling changed — "
+                + (wanted ? "now inverting the wheel" : "no longer inverting"))
         }
+    }
+
+    /// Whether this process holds Accessibility permission, optionally asking
+    /// for it.
+    ///
+    /// `CGEvent.tapCreate` does **not** trigger the system prompt — it simply
+    /// returns nil when the permission is missing, so a user who has never seen
+    /// a dialog is told to grant something they were never asked for. The
+    /// Accessibility API does prompt, so ask through that first.
+    @discardableResult
+    static func ensureAccessibility(prompt: Bool) -> Bool {
+        let key = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
+        return AXIsProcessTrustedWithOptions([key: prompt] as CFDictionary)
+    }
+
+    /// The path macOS will list in the Accessibility pane, which is not always
+    /// what the user thinks they are granting.
+    static var requestingProcessPath: String {
+        Bundle.main.bundleURL.pathExtension == "app"
+            ? Bundle.main.bundleURL.path
+            : ProcessInfo.processInfo.arguments.first.map {
+                URL(fileURLWithPath: $0).resolvingSymlinksInPath().path
+            } ?? "(unknown)"
+    }
+
+    /// Create and arm the tap on the current run loop, without blocking.
+    ///
+    /// Split out from `run` so the GUI can host the tap on its own run loop.
+    @discardableResult
+    static func start(_ desired: ScrollDirection) -> Bool {
+        invertNow = shouldInvert(desired)
 
         let mask = CGEventMask(1 << CGEventType.scrollWheel.rawValue)
         guard let tap = CGEvent.tapCreate(
@@ -68,14 +121,102 @@ enum ScrollController {
             place: .headInsertEventTap,
             options: .defaultTap,
             eventsOfInterest: mask,
-            callback: { _, type, event, _ in
-                // The tap is disabled if it ever times out; re-arm rather than
-                // silently dying.
+            callback: { proxy, type, event, _ in
+                // macOS disables a tap that stops responding. Re-arm rather
+                // than dying silently — for an agent running from login, a tap
+                // that quietly stopped would look exactly like the feature not
+                // working.
                 if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+                    if let tap = ScrollController.activeTap {
+                        CGEvent.tapEnable(tap: tap, enable: true)
+                    }
                     return Unmanaged.passUnretained(event)
                 }
-                // Continuous means trackpad / Magic Mouse -- leave those alone,
+                guard ScrollController.invertNow else {
+                    if ScrollController.verbose {
+                        print("  pass-through (not inverting)")
+                    }
+                    return Unmanaged.passUnretained(event)
+                }
+                // Continuous means trackpad / Magic Mouse — leave those alone,
                 // otherwise this would undo natural scrolling everywhere.
+                if event.getIntegerValueField(.scrollWheelEventIsContinuous) != 0 {
+                    if ScrollController.verbose { print("  trackpad — left alone") }
+                    return Unmanaged.passUnretained(event)
+                }
+                // Capture every field *before* writing any of them.
+                //
+                // Setting scrollWheelEventDeltaAxis1 makes CoreGraphics
+                // recompute the point and fixed-point deltas from it. A loop
+                // that reads and writes field by field therefore reads an
+                // already-negated value for the later fields and negates it
+                // back — leaving the line delta correct and the pixel delta
+                // untouched. Apps that scroll smoothly use the pixel delta, so
+                // the visible result was no change at all, while a log checking
+                // only the line delta showed a correct flip.
+                let d1 = event.getIntegerValueField(.scrollWheelEventDeltaAxis1)
+                let d2 = event.getIntegerValueField(.scrollWheelEventDeltaAxis2)
+                let p1 = event.getIntegerValueField(.scrollWheelEventPointDeltaAxis1)
+                let p2 = event.getIntegerValueField(.scrollWheelEventPointDeltaAxis2)
+                let f1 = event.getDoubleValueField(.scrollWheelEventFixedPtDeltaAxis1)
+                let f2 = event.getDoubleValueField(.scrollWheelEventFixedPtDeltaAxis2)
+
+                // Coarsest first, so the explicit finer values are the ones
+                // that survive any recomputation.
+                event.setIntegerValueField(.scrollWheelEventDeltaAxis1, value: -d1)
+                event.setIntegerValueField(.scrollWheelEventDeltaAxis2, value: -d2)
+                event.setIntegerValueField(.scrollWheelEventPointDeltaAxis1, value: -p1)
+                event.setIntegerValueField(.scrollWheelEventPointDeltaAxis2, value: -p2)
+                event.setDoubleValueField(.scrollWheelEventFixedPtDeltaAxis1, value: -f1)
+                event.setDoubleValueField(.scrollWheelEventFixedPtDeltaAxis2, value: -f2)
+
+                if ScrollController.verbose {
+                    print(String(
+                        format: "  delta %d->%d   point %d->%d   fixed %.3f->%.3f",
+                        d1, event.getIntegerValueField(.scrollWheelEventDeltaAxis1),
+                        p1, event.getIntegerValueField(.scrollWheelEventPointDeltaAxis1),
+                        f1, event.getDoubleValueField(.scrollWheelEventFixedPtDeltaAxis1)))
+                }
+                _ = proxy
+                return Unmanaged.passUnretained(event)
+            },
+            userInfo: nil
+        ) else { return false }
+
+        activeTap = tap
+        let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+        activeSource = source
+        CFRunLoopAddSource(CFRunLoopGetCurrent(), source, .commonModes)
+        CGEvent.tapEnable(tap: tap, enable: true)
+
+        // Follow the preference for as long as the tap lives.
+        let timer = Timer(timeInterval: 2, repeats: true) { _ in
+            refreshInversion(desired)
+        }
+        RunLoop.current.add(timer, forMode: .common)
+        activeTimer = timer
+        return true
+    }
+
+    /// Zero every wheel delta, so the wheel should stop scrolling entirely.
+    ///
+    /// The one unambiguous test of whether a modification made in this tap
+    /// reaches the application at all. Negation is a poor probe for that: if it
+    /// silently fails, the result is indistinguishable from doing nothing.
+    /// Blocking is not — either the page stops moving or it does not.
+    static func block() {
+        guard ensureAccessibility(prompt: true) else {
+            print("Accessibility permission is needed. Grant it, then retry.")
+            return
+        }
+        let mask = CGEventMask(1 << CGEventType.scrollWheel.rawValue)
+        guard let tap = CGEvent.tapCreate(
+            tap: .cgSessionEventTap,
+            place: .headInsertEventTap,
+            options: .defaultTap,
+            eventsOfInterest: mask,
+            callback: { _, type, event, _ in
+                guard type == .scrollWheel else { return Unmanaged.passUnretained(event) }
                 if event.getIntegerValueField(.scrollWheelEventIsContinuous) != 0 {
                     return Unmanaged.passUnretained(event)
                 }
@@ -87,20 +228,70 @@ enum ScrollController {
                     .scrollWheelEventFixedPtDeltaAxis1,
                     .scrollWheelEventFixedPtDeltaAxis2,
                 ] {
-                    let value = event.getIntegerValueField(field)
-                    if value != 0 { event.setIntegerValueField(field, value: -value) }
+                    event.setIntegerValueField(field, value: 0)
                 }
+                print("  blocked a wheel event")
                 return Unmanaged.passUnretained(event)
             },
             userInfo: nil
         ) else {
-            FileHandle.standardError.write(Data("""
-                error: could not create the event tap.
+            print("could not create the tap")
+            return
+        }
+        let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+        CFRunLoopAddSource(CFRunLoopGetCurrent(), source, .commonModes)
+        CGEvent.tapEnable(tap: tap, enable: true)
 
-                This needs Accessibility permission. Grant it to your terminal in
-                System Settings ▸ Privacy & Security ▸ Accessibility, then retry.
+        print("""
+            Wheel events are being zeroed. Scroll the WHEEL in any window.
 
-                """.utf8))
+              nothing moves      -> modifications from this tap do reach apps
+              it scrolls anyway  -> they do not, and inverting never could work
+
+            The trackpad is untouched either way. Ctrl-C to stop.
+
+            """)
+        CFRunLoopRun()
+    }
+
+    /// Print every scroll event as it arrives, changing nothing.
+    ///
+    /// Written because the tap armed successfully and the wheel still did not
+    /// invert. That leaves several possibilities — the events are marked
+    /// continuous and being skipped, the fields being negated are not the ones
+    /// the apps read, or the flip is applied downstream of this tap and undoes
+    /// the change — and none of them can be told apart without seeing the
+    /// actual event.
+    static func debug() {
+        guard ensureAccessibility(prompt: true) else {
+            print("Accessibility permission is needed. Grant it, then retry.")
+            return
+        }
+
+        let mask = CGEventMask(1 << CGEventType.scrollWheel.rawValue)
+        guard let tap = CGEvent.tapCreate(
+            tap: .cgSessionEventTap,
+            place: .headInsertEventTap,
+            options: .listenOnly,
+            eventsOfInterest: mask,
+            callback: { _, type, event, _ in
+                guard type == .scrollWheel else { return Unmanaged.passUnretained(event) }
+                let continuous = event.getIntegerValueField(.scrollWheelEventIsContinuous)
+                let d1 = event.getIntegerValueField(.scrollWheelEventDeltaAxis1)
+                let p1 = event.getIntegerValueField(.scrollWheelEventPointDeltaAxis1)
+                let f1 = event.getDoubleValueField(.scrollWheelEventFixedPtDeltaAxis1)
+                let phase = event.getIntegerValueField(.scrollWheelEventScrollPhase)
+                let momentum = event.getIntegerValueField(.scrollWheelEventMomentumPhase)
+                print(String(
+                    format: "continuous=%d  delta=%4d  pointDelta=%5d  fixed=%8.3f  "
+                        + "phase=%d momentum=%d   [macOS natural=%@]",
+                    continuous, d1, p1, f1, phase, momentum,
+                    ScrollController.macOSNaturalScrolling ? "on" : "off"))
+                return Unmanaged.passUnretained(event)
+            },
+            userInfo: nil
+        ) else {
+            print("could not create the tap even with permission held")
             return
         }
 
@@ -108,16 +299,83 @@ enum ScrollController {
         CFRunLoopAddSource(CFRunLoopGetCurrent(), source, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
 
+        print("Scroll the WHEEL a few notches, then the TRACKPAD a little.")
+        print("A wheel that reports continuous=1 is why inversion does nothing.\n")
+        CFRunLoopRun()
+    }
+
+    static func stop() {
+        if let tap = activeTap { CGEvent.tapEnable(tap: tap, enable: false) }
+        if let source = activeSource {
+            CFRunLoopRemoveSource(CFRunLoopGetCurrent(), source, .commonModes)
+        }
+        activeTimer?.invalidate()
+        activeTap = nil
+        activeSource = nil
+        activeTimer = nil
+    }
+
+    fileprivate static var activeTap: CFMachPort?
+    private static var activeSource: CFRunLoopSource?
+    private static var activeTimer: Timer?
+
+    /// Run the event tap until interrupted. Never returns under normal use.
+    static func run(_ desired: ScrollDirection, verbose: Bool = false) {
+        ScrollController.verbose = verbose
+        guard desired != .follow else {
+            print("`follow` means no interception — nothing to run.")
+            print("The mouse already follows the macOS preference.")
+            return
+        }
+
+        if !ensureAccessibility(prompt: false) {
+            print("""
+                Accessibility permission is needed to read scroll events.
+
+                Asking for it now — a system dialog should appear. If it does
+                not, add this to System Settings ▸ Privacy & Security ▸
+                Accessibility by hand:
+
+                    \(requestingProcessPath)
+
+                Note that the entry is for the program that *asks*, which is the
+                terminal you are running this from — not asctl itself, unless
+                you launched the app bundle.
+
+                """)
+            ensureAccessibility(prompt: true)
+            print("Grant it, then run this command again.")
+            print("An already-listed entry may need to be toggled off and on "
+                + "after the binary is rebuilt.")
+            return
+        }
+
+        guard start(desired) else {
+            FileHandle.standardError.write(Data("""
+                error: the event tap could not be created even though
+                Accessibility permission is held.
+
+                Try toggling this entry off and on in System Settings:
+                    \(requestingProcessPath)
+
+                """.utf8))
+            return
+        }
+
         print("macOS natural scrolling: \(macOSNaturalScrolling ? "on" : "off")")
         print("mouse wheel: \(desired.label)")
-        print("inverting discrete scroll events; trackpad untouched.")
+        print(shouldInvert(desired)
+            ? "inverting discrete scroll events; trackpad untouched."
+            : "not inverting right now — the macOS setting already matches.")
+        print("\nThis keeps watching the macOS preference, so toggling it while")
+        print("this runs is handled without a restart.")
         print("\nrunning — press Ctrl-C to stop.")
         CFRunLoopRun()
     }
 
     // MARK: - Running in the background
 
-    static let agentLabel = "org.opensource.asctl.scroll"
+    static let agentLabel = "io.github.yourchocomate.asctl.scroll"
 
     static var agentURL: URL {
         FileManager.default.homeDirectoryForCurrentUser

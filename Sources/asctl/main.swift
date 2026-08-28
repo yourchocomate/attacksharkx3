@@ -101,6 +101,7 @@ COMMANDS
                            `status` shows the current state. Runs until Ctrl-C
                            and needs Accessibility permission. The trackpad is
                            never affected.
+                             asctl scroll debug              dump raw scroll events
                              asctl scroll install standard   run it at login
                              asctl scroll uninstall
   ble scan                 Find the mouse over Bluetooth and dump its GATT table
@@ -1431,6 +1432,22 @@ func commandScroll(_ options: Options) {
             print("            → \(action)")
         }
         print("\nrun e.g.  asctl scroll standard")
+        return
+    }
+
+    if requested == "debug" {
+        // With a mode, run the real inverting tap and log what it does to each
+        // event — a listen-only tap cannot show whether a modification lands.
+        if options.positionals[safe: 1] == "block" {
+            ScrollController.block()
+            return
+        }
+        if let name = options.positionals[safe: 1],
+           let mode = ScrollDirection(rawValue: name) {
+            ScrollController.run(mode, verbose: true)
+        } else {
+            ScrollController.debug()
+        }
         return
     }
 

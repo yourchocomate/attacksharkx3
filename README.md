@@ -49,7 +49,7 @@ by the device. That distinction matters here more than usual — see
 | Checksum — 16-bit sum, big-endian | decoded, two implementations cross-checked |
 | Key debounce | **verified on hardware** (`power-test debounce`) — and the field counts **2 ms units**, so the vendor's "2-25" slider is really 4-50 ms |
 | Sleep / deep sleep | mapped with ranges; writes accepted, **behaviour unmeasured**. Three attempts to measure it were all invalid — see the protocol notes (`power`, `power-test sleep`/`wake`) |
-| Scroll direction vs macOS natural scrolling | implemented, **not yet exercised** (`scroll`) |
+| Scroll direction vs macOS natural scrolling | **working** (`scroll standard`) — host-side event tap, wheel only, trackpad untouched |
 | Battery over 2.4 GHz | decoded; the event has **never been observed firing** |
 | Move Wake | mapped — the vendor app **never transmits it**. Dead setting, not exposed |
 | Lighting | **not a feature of this hardware** — see below |
@@ -247,9 +247,14 @@ asctl buttons defaults --ble  # any write command takes --ble
 Makes the wheel ignore macOS "Natural scrolling" without affecting the trackpad.
 
 ```bash
+asctl scroll status               # what macOS is set to, and what each mode would do
 asctl scroll standard             # runs until Ctrl-C
 asctl scroll install standard     # run it at login
 asctl scroll uninstall
+
+asctl scroll debug                # dump raw scroll events, change nothing
+asctl scroll debug standard       # invert and log what each event became
+asctl scroll debug block          # zero every wheel delta
 ```
 
 ### Raw access

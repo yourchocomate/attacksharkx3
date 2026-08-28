@@ -15,6 +15,7 @@ USAGE
 
 COMMANDS
   gui                      Open the graphical interface
+  selftest                 Verify generated payloads against the protocol (no hardware)
   list                     List Attack Shark HID interfaces (--all for every HID device)
   descriptor               Dump and decode the HID report descriptor
   probe                    Read-only sweep of feature reports (safe; never writes)
@@ -99,6 +100,9 @@ COMMANDS
   ble write <hex>          Write a config buffer to the FEE3 characteristic
   ble battery              Read the battery level over Bluetooth (GATT 2A19)
   ble listen [seconds]     Listen on the FEE4 notify characteristic
+  blediag [seconds]        Dump GATT, five battery reads, and every notify
+                           packet while you press buttons. Use this rather
+                           than guessing at a battery or event problem.
                            Bluetooth configuration goes over GATT, not HID —
                            the vendor app does the same.
   send <reportID> <command> [payload-hex]
@@ -761,6 +765,103 @@ func commandLight(_ options: Options) {
     print("ok — preamble + \(report.count)-byte lighting report written")
 }
 
+/// `asctl ble diag` — dump what the Bluetooth link actually reports.
+///
+/// Written because two bugs were guessed at repeatedly instead of measured:
+/// a battery level that would not settle, and a status listener that seemed to
+/// miss DPI-button events. Both are questions about bytes arriving from the
+/// device, and neither is answerable by reading the host code.
+///
+/// Prints the GATT table, five battery reads on one connection with the raw
+/// characteristic bytes, then everything that arrives on the notify
+/// characteristic while you use the mouse.
+func commandBLEDiag(_ options: Options) {
+    let seconds = options.positionals[safe: 1].flatMap(Double.init) ?? 25.0
+    let ble = BLEConnection()
+
+    print("scanning…")
+    guard ble.discover() else {
+        print("error: \(ble.lastError ?? "no peripherals found")")
+        return
+    }
+    for (peripheral, _) in ble.foundPeripherals {
+        print("  seen: \(peripheral.name ?? "(unnamed)")  \(peripheral.identifier)")
+    }
+    guard let target = ble.foundPeripherals.map({ $0.0 }).first(where: GUITransport.isX3) else {
+        print("error: none of those is the mouse")
+        return
+    }
+    print("\nconnecting to \(target.name ?? "?")…")
+    guard ble.connect(target) else {
+        print("error: \(ble.lastError ?? "connect failed")")
+        return
+    }
+    print("GATT table:")
+    for line in ble.describeServices() { print("  \(line)") }
+
+    print("\nbattery — five reads on this one connection, 3s apart")
+    for attempt in 1...5 {
+        let level = ble.readBattery()
+        let raw = ble.batteryRaw
+        print(String(
+            format: "  %d/5  level=%@  raw=%@",
+            attempt,
+            level.map(String.init) ?? "nil",
+            raw.isEmpty ? "(none)" : Hex.encode(raw)))
+        if attempt < 5 { ble.pump(seconds: 3) }
+    }
+
+    guard ble.subscribe() else {
+        print("\nerror: could not subscribe to the notify characteristic")
+        return
+    }
+    print("\nlistening \(Int(seconds))s on FEE4.")
+    print("PRESS THE DPI BUTTON a few times, and the mode button too.\n")
+
+    let deadline = Date().addingTimeInterval(seconds)
+    var total = 0
+    while Date() < deadline {
+        ble.pump(seconds: 0.5)
+        for packet in ble.takeNotifications() {
+            total += 1
+            let decoded = StatusEvent.parseBLE(packet)?.description ?? "unrecognised"
+            print("  \(Hex.encode(packet))   \(decoded)")
+        }
+    }
+    ble.disconnect()
+    print("\n\(total) notification(s). If pressing the DPI button produced none,")
+    print("the stage-change event does not reach this transport.")
+
+    // Repeated reads on one connection were shown to climb by exactly one each
+    // time. That leaves the question of whether the *first* read on a fresh
+    // link is trustworthy — which is the only thing that decides whether this
+    // characteristic can be used at all.
+    print("\nbattery — three separate connections, one read each, 5s apart")
+    for attempt in 1...3 {
+        let fresh = BLEConnection()
+        defer { fresh.disconnect() }
+        guard fresh.discover(),
+              let peripheral = fresh.foundPeripherals.map({ $0.0 })
+                .first(where: GUITransport.isX3),
+              fresh.connect(peripheral)
+        else {
+            print("  \(attempt)/3  could not connect")
+            continue
+        }
+        let level = fresh.readBattery()
+        print(String(
+            format: "  %d/3  first read on a new link: level=%@  raw=%@",
+            attempt,
+            level.map(String.init) ?? "nil",
+            fresh.batteryRaw.isEmpty ? "(none)" : Hex.encode(fresh.batteryRaw)))
+        fresh.disconnect()
+        if attempt < 3 { Thread.sleep(forTimeInterval: 5) }
+    }
+    print("\nIdentical values here mean the first read on a link is the real")
+    print("level and only re-reads drift. Climbing values mean the counter is")
+    print("global and 2A19 cannot be trusted as a battery level at all.")
+}
+
 func commandStatus(_ options: Options) {
     let seconds = options.positionals[safe: 0].flatMap(Double.init) ?? 15.0
     var devices = candidateDevices(options).filter { $0.canConfigure }
@@ -1068,10 +1169,25 @@ func applyProfile(_ profile: Profile, _ options: Options) {
         toggles.rippleControl = profile.rippleControl ?? false
         toggles.angleSnap = profile.angleSnap ?? false
         toggles.motionSync = profile.motionSync ?? false
-        reports.append(DpiReport.build(
-            stages: stages,
-            activeStage: max(0, (profile.activeStage ?? 1) - 1),
-            colours: colours, toggles: toggles.bytes))
+        // Prefer the slot-accurate builder when the profile records which
+        // slots are enabled: report 0x04 addresses eight slots by index, and
+        // compacting them renumbers every stage above a disabled one.
+        if let enabled = profile.stageEnabled, enabled.count == DpiReport.maxStages,
+            stages.count == DpiReport.maxStages
+        {
+            let slots = (0..<DpiReport.maxStages).map { index -> DpiReport.Slot in
+                let colour = index < colours.count ? colours[index] : (r: 255, g: 255, b: 255)
+                return DpiReport.Slot(
+                    dpi: stages[index], enabled: enabled[index], colour: colour)
+            }
+            reports.append(DpiReport.buildSlots(
+                slots, activeSlot: profile.activeStage ?? 0, toggles: toggles.bytes))
+        } else {
+            reports.append(DpiReport.build(
+                stages: stages,
+                activeStage: profile.activeStage ?? 0,
+                colours: colours, toggles: toggles.bytes))
+        }
         labels.append("DPI + toggles")
     }
     if profile.sleepMinutes != nil || profile.deepSleepMinutes != nil
@@ -1130,7 +1246,8 @@ func commandProfile(_ options: Options) {
         var profile = Profile()
         profile.dpiStages = options.positionals[safe: 2]?
             .split(separator: ",").compactMap { Int($0) }
-        profile.activeStage = options.activeStage
+        // --active is 1-based for the user; the file format is 0-based.
+        profile.activeStage = options.activeStage.map { max(0, $0 - 1) }
         profile.pollingRateHz = options.positionals[safe: 3].flatMap { Int($0) }
         if let colours = options.colours {
             profile.colours = colours.split(separator: ";").map {
@@ -1466,6 +1583,8 @@ case "send": commandSend(options)
 case "pollrate": commandPollRate(options)
 case "dpi": commandDpi(options)
 case "gui": runGUI()
+case "selftest": SelfTest.run()
+case "blediag": commandBLEDiag(options)
 case "light": commandLight(options)
 case "light-probe": LightProbe.run(options)
 case "power": commandPower(options)

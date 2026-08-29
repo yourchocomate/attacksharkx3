@@ -311,31 +311,36 @@ struct LogPane: View {
 
 /// A segmented battery gauge.
 ///
-/// Ten vertical bars in a battery outline, filled to the level and coloured by
-/// it. The colour thresholds are conventional rather than protocol-derived —
-/// the device reports a plain 0-100 percentage on GATT 2A19 and attaches no
+/// Ten vertical bars, matching the ten steps status event 0x4010 can report —
+/// it carries a level of 1...10 which the vendor multiplies by ten. GATT 2A19
+/// is a finer 0-100, so on Bluetooth a bar is a rounding. The colour thresholds
+/// are conventional rather than protocol-derived; the device attaches no
 /// meaning to any band.
 @available(macOS 12.0, *)
 struct BatteryGauge: View {
     let level: Int?
     let available: Bool
-    let reading: Bool
+    /// Whether a level arrived inside the six-second heartbeat window. False
+    /// once the watchdog lapses, which is the vendor's own test for asleep.
+    var current: Bool = true
+    var asleep: Bool = false
 
+    /// Ten segments because the device reports ten steps, not because ten
+    /// looked tidy: the vendor multiplies a level of 1...10 by ten, so every
+    /// reachable value lands exactly on a segment boundary.
     private let segments = 10
 
-    /// 2A19 is defined as 0-100; clamp anyway so a bad read can never render as
-    /// an impossible gauge.
     private var percent: Int? { level.map { max(0, min(100, $0)) } }
 
     private var colour: Color {
-        guard let percent else { return .secondary }
+        guard let percent, current else { return .secondary }
         if percent <= 20 { return .red }
         if percent <= 40 { return .orange }
         return .green
     }
 
     private var filled: Int {
-        guard let percent else { return 0 }
+        guard let percent, current else { return 0 }
         return max(0, min(segments, Int((Double(percent) / 100.0 * Double(segments)).rounded())))
     }
 
@@ -361,23 +366,32 @@ struct BatteryGauge: View {
             }
 
             VStack(alignment: .leading, spacing: 1) {
-                if let percent {
+                if let percent, current {
                     Text("\(percent)%")
                         .font(.system(size: 15, weight: .semibold, design: .rounded))
                         .foregroundStyle(colour)
-                } else if reading {
-                    Text("reading…").font(.system(size: 11)).foregroundStyle(.secondary)
-                } else if available {
+                    if asleep {
+                        Text("asleep")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.tertiary)
+                    }
+                } else if !available {
+                    Text("no mouse")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                } else if level != nil {
+                    // A level arrived once and then the heartbeat stopped. The
+                    // vendor hides its gauge and shows a sleep label here.
+                    Text("asleep")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(.secondary)
+                    Text("last reported \(percent ?? 0)%")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.tertiary)
+                } else {
                     Text("—").font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(.secondary)
-                } else {
-                    Text("Bluetooth only")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
-                }
-
-                if !available {
-                    Text("no battery report on 2.4 GHz")
+                    Text("no level reported yet")
                         .font(.system(size: 9))
                         .foregroundStyle(.tertiary)
                 }

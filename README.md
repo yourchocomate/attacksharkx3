@@ -42,7 +42,7 @@ by the device. That distinction matters here more than usual — see
 | Macros | **verified** (`macro`) — upload, fragmentation, execution, keyboard + mouse events, loop count, all three loop modes |
 | Button mapping | **verified** (`buttons`) — full named action table, button order confirmed, factory defaults recoverable |
 | Bluetooth configuration | **verified** over GATT — same reports, same acknowledgements (`--ble`) |
-| Battery level | **verified over Bluetooth** (`ble battery`, GATT `2A19`) |
+| Battery level | **verified over Bluetooth** — GATT `2A19`, read **once per power cycle**. Reading it increments it, so only the first read after the mouse powers up is true; asctl takes exactly one and caches it, which is what macOS does |
 | Status events — DPI stage, write acks | **verified** (`status`) |
 | Profiles | **host-side** (`profile save/apply/list`) — the device's own slots are unused by this product |
 | Device discovery, framing, raw feature-report I/O | working |
@@ -50,7 +50,7 @@ by the device. That distinction matters here more than usual — see
 | Key debounce | **verified on hardware** (`power-test debounce`) — and the field counts **2 ms units**, so the vendor's "2-25" slider is really 4-50 ms |
 | Sleep / deep sleep | mapped with ranges; writes accepted, **behaviour unmeasured**. Three attempts to measure it were all invalid — see the protocol notes (`power`, `power-test sleep`/`wake`) |
 | Scroll direction vs macOS natural scrolling | **working** (`scroll standard`) — host-side event tap, wheel only, trackpad untouched |
-| Battery over 2.4 GHz | decoded; the event has **never been observed firing** |
+| Battery event `0x4010` | decoded from the vendor binary; **never observed firing** on either transport |
 | Move Wake | mapped — the vendor app **never transmits it**. Dead setting, not exposed |
 | Lighting | **not a feature of this hardware** — see below |
 | Reading current settings | **impossible** — the protocol is write-only |
@@ -267,7 +267,7 @@ asctl profile list
 
 ```bash
 asctl ble scan                # find the mouse and dump its GATT table
-asctl ble battery             # battery level
+asctl ble battery             # battery level — reads 2A19 once (see the note above)
 asctl ble listen 10           # watch the notify characteristic
 asctl buttons defaults --ble  # any write command takes --ble
 ```
@@ -362,7 +362,11 @@ Also wanted:
 - **Other Attack Shark models.** The report framing looks shared across the
   range, so it may well generalise. `asctl light-probe` is kept specifically so
   lighting can be re-tested on a model that actually has it.
-- **The 2.4 GHz battery event.** Decoded but never observed firing.
+- **The battery event `0x4010`.** Decoded but never observed firing, on either
+  transport. The vendor arms a six-second watchdog for it and shows a sleep
+  label when it lapses, so it should be routine on a working vendor setup —
+  which makes its absence here the open question. Untried: the mouse on
+  battery power with the 2.4 GHz receiver connected.
 - **Measuring the sleep timers**, which are currently write-accepted but
   unverified. `asctl power-test sleep` watches for the Bluetooth link to drop,
   which is the only unambiguous signal — a mouse nobody is moving is silent

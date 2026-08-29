@@ -179,6 +179,40 @@ enum SelfTest {
         expect("deep sleep low nibble", (power[5] & 0xF0) >> 4, 10)
         expect("checksum", checksumOK(power, payload: 3...10, at: 11), true)
 
+        // Battery — status event 0x4010.
+        //
+        // Expectations taken from X3.exe 0x00413418-0x00413473: the level is the
+        // high byte, valid only in 1...10 and multiplied by ten for display; the
+        // low byte being zero means asleep.
+        print("\nBattery — status event 0x4010")
+
+        let awake = StatusEvent.Event(code: 0x4010, value: 0x0501)
+        expect("level 5 reads as 50%", awake.batteryPercent ?? -1, 50)
+        expect("non-zero low byte is awake", awake.isAsleep ?? true, false)
+
+        let asleep = StatusEvent.Event(code: 0x4010, value: 0x0A00)
+        expect("level 10 reads as 100%", asleep.batteryPercent ?? -1, 100)
+        expect("zero low byte is asleep", asleep.isAsleep ?? false, true)
+
+        // The vendor's range check is `level - 1 <= 9` unsigned, so both zero
+        // and eleven fall out and leave the gauge untouched.
+        expect("level 0 is rejected",
+               StatusEvent.Event(code: 0x4010, value: 0x0001).batteryPercent == nil, true)
+        expect("level 11 is rejected",
+               StatusEvent.Event(code: 0x4010, value: 0x0B01).batteryPercent == nil, true)
+
+        // Ten discrete steps and nothing between them: every reachable level
+        // must land on a multiple of ten.
+        var offGrid = 0
+        for level in 1...10 {
+            let event = StatusEvent.Event(code: 0x4010, value: UInt16(level) << 8 | 1)
+            if (event.batteryPercent ?? -1) % 10 != 0 { offGrid += 1 }
+        }
+        expect("every level is a multiple of ten", offGrid, 0)
+
+        expect("the heartbeat window is the vendor's six seconds",
+               AppState.batteryHeartbeat, 6.0)
+
         print("\n\(checks - failures)/\(checks) checks passed")
         if failures > 0 {
             print("\(failures) FAILED")

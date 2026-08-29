@@ -115,7 +115,9 @@ struct MenuBarView: View {
         VStack(alignment: .leading, spacing: 5) {
             label("Battery")
             if let level = state.battery {
-                BatteryGauge(level: level, available: true, reading: false)
+                BatteryGauge(
+                    level: level, available: true,
+                    current: state.batterySeen, asleep: state.batteryAsleep)
             } else if state.batteryAvailable {
                 Text("waiting for the mouse to report")
                     .font(.system(size: 12))

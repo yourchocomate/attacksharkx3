@@ -197,7 +197,8 @@ struct MainView: View {
                         BatteryGauge(
                             level: state.battery,
                             available: state.batteryAvailable,
-                            reading: state.batteryReading)
+                            current: state.batterySeen,
+                            asleep: state.batteryAsleep)
 
                         if state.batteryHistory.count > 1 {
                             VStack(alignment: .leading, spacing: 1) {
@@ -217,15 +218,28 @@ struct MainView: View {
                                 .foregroundStyle(.secondary)
                         }
 
-                        Text(
-                            "The mouse sends its level when it chooses to; there is no "
-                            + "way to ask for one. Keep the listener running and it "
-                            + "arrives on its own, over Bluetooth or the 2.4 GHz "
-                            + "receiver alike. It comes in ten steps, so 40% means "
-                            + "four bars out of ten rather than a rounded reading."
-                        )
+                        Text(state.link == .bluetooth
+                            ? "Read once from GATT 2A19 as the link came up, the way "
+                              + "macOS does it. Reading that characteristic increments "
+                              + "it, so the first read after the mouse powers up is the "
+                              + "only true one — asctl takes exactly one and then leaves "
+                              + "it alone."
+                            : "Pushed by the mouse as status event 0x4010, which the "
+                              + "vendor expects every six seconds and answers with a "
+                              + "sleep label when it lapses. It carries ten steps, which "
+                              + "is why the gauge has ten bars.")
                         .font(.system(size: 10))
                         .foregroundStyle(.secondary)
+
+                        if let level = state.battery, level > 100 {
+                            Text(
+                                "Above 100, so 2A19 had already been read since the "
+                                + "mouse last powered up — by another tool, or by an "
+                                + "earlier run. Power-cycle the mouse for a clean value."
+                            )
+                            .font(.system(size: 10))
+                            .foregroundStyle(.orange)
+                        }
                     }
                 }
 

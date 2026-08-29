@@ -114,12 +114,17 @@ enum GUITransport {
         return name.contains("x3") || name.contains("attack shark")
     }
 
-    /// Battery level, which is only reachable over Bluetooth GATT.
+    /// Read GATT 2A19 once — **and never twice on the same power cycle**.
     ///
-    /// Returns the level plus a diagnostic line naming the peripheral it came
-    /// from and the raw bytes, because a level that looks wrong is almost
-    /// always the wrong device rather than a decoding error, and only the raw
-    /// read distinguishes the two.
+    /// The characteristic holds the real level, but reading it increments it:
+    /// three reads inside a tenth of a second moved it 186 → 188, while thirty
+    /// idle seconds moved it not at all. So the first read after the device
+    /// powers up is the true level and everything after is damage the reader
+    /// inflicted. A run that began at 75 was a genuine 75% followed by four
+    /// self-inflicted increments.
+    ///
+    /// macOS reads it once when the link comes up and caches the result, which
+    /// is why its figure stays correct. The GUI does the same, in StatusMonitor.
     static func readBattery() -> (Int?, String) {
         let ble = BLEConnection()
         defer { ble.disconnect() }

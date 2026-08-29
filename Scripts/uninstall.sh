@@ -12,6 +12,7 @@
 #   uninstall.sh --all        remove everything, including profiles
 set -uo pipefail
 
+BUNDLE_ID="io.github.yourchocomate.asctl"
 CONFIG="$HOME/.config/asctl"
 PREFS="$HOME/Library/Preferences/io.github.yourchocomate.asctl.plist"
 AGENTS=(
@@ -71,15 +72,36 @@ esac
 
 echo
 echo "stopping anything that is running…"
-pkill -f "asctl gui" 2>/dev/null && echo "  quit the app"
+# Match the process name, not the command line.
+#
+# This used to grep for "asctl gui", which never matched: the bundled app is
+# launched by macOS with no arguments at all, so its command line is just the
+# path. The uninstaller went straight on to delete an app that was still
+# running, leaving the menu bar item behind until the user logged out.
+pkill -x asctl 2>/dev/null && echo "  quit the app"
 pkill -f "asctl scroll" 2>/dev/null && echo "  stopped the wheel fix"
+# Give the event tap and the HID handles a moment to go.
+sleep 1
 
 for agent in "${AGENTS[@]}"; do
     if [ -f "$agent" ]; then
-        launchctl unload "$agent" 2>/dev/null
+        label="$(basename "$agent" .plist)"
+        launchctl bootout "gui/$(id -u)/$label" 2>/dev/null
+        launchctl unload "$agent" 2>/dev/null     # older macOS
         rm -f "$agent" && echo "  removed $(basename "$agent")"
     fi
 done
+
+# Revoke the Privacy & Security entries.
+#
+# Must happen before the app is deleted: tccutil resolves the bundle
+# identifier through LaunchServices, which stops knowing it once the bundle is
+# gone. Needs no sudo — these are the user's own grants.
+if command -v tccutil >/dev/null 2>&1; then
+    if tccutil reset All "$BUNDLE_ID" >/dev/null 2>&1; then
+        echo "  revoked Input Monitoring, Bluetooth and Accessibility"
+    fi
+fi
 
 for app in "${APPS[@]}"; do
     if [ -d "$app" ]; then
@@ -101,10 +123,7 @@ fi
 echo
 echo "done."
 echo
-echo "Two things this cannot do for you:"
-echo "  - Privacy & Security still lists asctl under Input Monitoring,"
-echo "    Bluetooth and Accessibility. Remove those entries by hand; macOS"
-echo "    gives no way to revoke them programmatically."
-echo "  - Any setting already written to the mouse stays on the mouse. The"
-echo "    protocol has no readback and no factory reset, so the device keeps"
-echo "    whatever it was last told until something writes over it."
+echo "One thing this cannot do for you:"
+echo "  Any setting already written to the mouse stays on the mouse. The"
+echo "  protocol has no readback and no factory reset, so the device keeps"
+echo "  whatever it was last told until something writes over it."

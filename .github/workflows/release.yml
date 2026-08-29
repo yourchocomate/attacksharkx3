@@ -148,15 +148,36 @@ jobs:
 
             Both are universal (Apple silicon and Intel).
 
-            ### First launch
+            ### First launch — macOS will block it once
 
-            These builds are **ad-hoc signed, not notarised**, so macOS will
-            refuse a double-click the first time. Right-click the app and choose
-            Open, or for the CLI run `xattr -d com.apple.quarantine asctl`.
+            These builds are **ad-hoc signed, not notarised**, so Gatekeeper
+            refuses them until you say otherwise. One command clears it:
+
+            ```bash
+            xattr -dr com.apple.quarantine /Applications/asctl.app
+            ```
+
+            Or double-click, let it be refused, then go to **System Settings ▸
+            Privacy & Security**, scroll to Security, and press **Open Anyway**.
+
+            Right-click ▸ Open used to be enough; on current macOS it is not.
+
+            For the CLI: `xattr -d com.apple.quarantine asctl`.
 
             Notarising needs a paid Developer ID, which this project does not
             have. The build is reproducible from source if you would rather not
             trust the binary — see the workflow.
+
+            ### Updating
+
+            The app can update itself — the menu bar item has a check, and it
+            verifies the download against `SHA256SUMS.txt` before installing.
+
+            One wrinkle, and it is unavoidable without a paid Developer ID:
+            because these builds are ad-hoc signed, macOS identifies the app by
+            a hash of that exact build, so **the permissions below have to be
+            granted again after every update**. Nothing is broken when that
+            happens.
 
             ### Permissions
 

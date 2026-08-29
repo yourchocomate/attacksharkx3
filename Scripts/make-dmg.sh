@@ -36,9 +36,20 @@ asctl — Attack Shark X3 for macOS
 Install
   Drag asctl.app onto the Applications folder.
 
-First launch
-  Right-click the app and choose Open. It is signed ad-hoc rather than
-  notarised, so a double-click will be refused the first time.
+First launch — macOS will block it once
+  This build is signed ad-hoc, not notarised (notarising needs a paid Apple
+  Developer ID). Gatekeeper refuses it until you say otherwise. Either:
+
+  a) Open Terminal and run, in one line:
+         xattr -dr com.apple.quarantine /Applications/asctl.app
+     Then open the app normally. This always works.
+
+  b) Or double-click, let it be refused, then go to
+     System Settings > Privacy & Security, scroll to Security, and press
+     "Open Anyway" next to the message about asctl.
+
+  Right-clicking and choosing Open used to be enough. On current macOS it is
+  not, so ignore that advice if you find it elsewhere.
 
   Grant these when asked, in System Settings > Privacy & Security:
     Input Monitoring  - configuring over the 2.4GHz receiver or USB cable
@@ -63,5 +74,6 @@ rm -rf "$STAGE"
 echo
 echo "done: $DMG  ($(du -h "$DMG" | cut -f1))"
 echo
-echo "Note it is ad-hoc signed, not notarised — first launch needs"
-echo "right-click > Open. Notarising requires a paid Developer ID."
+echo "Ad-hoc signed, not notarised. First launch is blocked until either"
+echo "  xattr -dr com.apple.quarantine /Applications/asctl.app"
+echo "or System Settings > Privacy & Security > Open Anyway."

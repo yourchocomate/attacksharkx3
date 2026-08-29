@@ -916,6 +916,18 @@ final class AppState: ObservableObject {
                 case .success:
                     self.updateState = .installed(version: release.version)
                     self.note("installed \(release.version) — restarting")
+                    // Warn before it looks like a fault.
+                    //
+                    // These builds are ad-hoc signed, so the code signature
+                    // has no team identifier and the designated requirement
+                    // macOS records is a literal hash of that exact build
+                    // (measured: `cdhash H"c55eff…"`). A new build hashes
+                    // differently, so TCC no longer matches it and the grants
+                    // do not carry over. Nothing is wrong — but silently
+                    // losing Bluetooth after an update would look like one.
+                    self.note("permissions will need granting again — an "
+                        + "ad-hoc signed build is identified by its hash, "
+                        + "which every release changes")
                     if let bundle = Updater.installedBundle() {
                         Updater.relaunch(bundle)
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {

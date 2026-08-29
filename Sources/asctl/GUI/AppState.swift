@@ -53,7 +53,8 @@ final class AppState: ObservableObject {
     ///
     /// Preference goes to the receiver when both are somehow visible: it is the
     /// full-feature path, and it does not suffer the dead-cursor firmware fault.
-    /// Battery is the opposite — only Bluetooth can report it.
+    /// It is also where the battery heartbeat is expected, since the vendor
+    /// software only ever talks over the receiver.
     func detectLink() {
         if receiverPresent {
             if link != .receiver { note("detected the 2.4 GHz receiver / USB cable") }
@@ -66,14 +67,15 @@ final class AppState: ObservableObject {
         }
     }
 
-    /// The battery arrives as a status event, on whichever link is up.
+    /// A level is obtainable, though by a different route on each link.
     ///
-    /// It used to be read from GATT 2A19 and so was offered on Bluetooth only.
-    /// That characteristic turned out to be a read counter — one higher per
-    /// read, unmoved by thirty idle seconds, still climbing past 100 — so
-    /// nothing is read now. The device volunteers a level the same way it
-    /// volunteers a DPI-stage change, and that reaches us on 2.4 GHz and
-    /// Bluetooth alike.
+    /// Bluetooth: GATT 2A19, read exactly once as the link comes up. It holds
+    /// the true level but reading increments it, so the first read after the
+    /// device powers up is the only trustworthy one — which is why macOS reads
+    /// it once and caches it.
+    ///
+    /// 2.4 GHz: status event 0x4010, pushed by the device on a six-second
+    /// heartbeat. Decoded from the vendor binary, never yet observed firing.
     var batteryAvailable: Bool { !devices.isEmpty || bluetoothPresent }
 
     // MARK: DPI and sensor — report 0x04
@@ -302,34 +304,66 @@ final class AppState: ObservableObject {
         if autoSelect { detectLink() }
     }
 
-    @Published var batteryReading = false
-    /// When the last level arrived. Shown because these are pushed at the
-    /// device's discretion, so a reading can be hours old with nothing wrong.
+    /// The vendor's own model, taken from X3.exe rather than invented here.
+    ///
+    /// Timer 100 is armed with `Open_FeatureDevice` (0x0041304e), re-armed by
+    /// every 0x4010 event (0x004133c6), and killed with `Close_FeatureDevice`
+    /// (0x004130b5) — always for 0x1770 ms, six seconds. When it expires
+    /// (0x00408c72) the app clears its "battery seen" flag, hides the readout
+    /// and shows the sleep label. So a battery event is a heartbeat, and six
+    /// seconds of silence is how the vendor decides the mouse is asleep.
+    static let batteryHeartbeat: TimeInterval = 6
+
+    /// Whether a level has arrived within the heartbeat window. The vendor's
+    /// flag at [page+0x3ec].
+    @Published var batterySeen = false
+    /// The vendor's flag at [page+0x3e8], set when the event's low byte is
+    /// zero, and also whenever the heartbeat lapses.
+    @Published var batteryAsleep = false
+    private var batteryWatchdog: Timer?
+
+    /// When the last level arrived.
+    ///
+    /// Worth showing because neither source is continuous: the 2.4 GHz level is
+    /// pushed at the device's discretion, and the Bluetooth one is read once as
+    /// the link comes up and then left alone. A reading can be legitimately old.
     @Published var batteryAt: Date?
-    /// The last few readings, kept visible. A level that behaves oddly is far
-    /// easier to diagnose from a short history than from one number.
+    /// The last few readings. A level that behaves oddly is far easier to
+    /// diagnose from a short history than from one number — which is how the
+    /// 2A19 increment was caught in the first place.
     @Published var batteryHistory: [(level: Int, raw: String, at: Date)] = []
 
-    /// There is nothing to refresh.
-    ///
-    /// The level cannot be requested — no command asks for one, and the
-    /// characteristic that looked like it answered was counting reads. All the
-    /// app can do is keep the listener up and show the last level the mouse
-    /// sent, with the time it arrived so a stale one is obvious.
-    func refreshBattery() {
-        guard monitorRunning else {
-            note("battery: start the listener first — the level is only ever pushed")
-            return
+    /// Re-arm the six-second watchdog, exactly as the 0x4010 handler does.
+    func armBatteryWatchdog() {
+        batteryWatchdog?.invalidate()
+        let timer = Timer.scheduledTimer(
+            withTimeInterval: Self.batteryHeartbeat, repeats: false
+        ) { [weak self] _ in
+            guard let self else { return }
+            // The vendor hides the readout and shows the sleep label; it does
+            // not clear the level. Keep the last number for the history but
+            // stop presenting it as current.
+            self.batterySeen = false
+            self.batteryAsleep = true
+            self.note("battery: no report for "
+                + "\(Int(Self.batteryHeartbeat))s — the mouse is asleep")
         }
-        note("battery: nothing to request; waiting for the mouse to report")
+        RunLoop.main.add(timer, forMode: .common)
+        batteryWatchdog = timer
+    }
+
+    func killBatteryWatchdog() {
+        batteryWatchdog?.invalidate()
+        batteryWatchdog = nil
+        batterySeen = false
     }
 
     func recordBattery(_ level: Int, raw: String, name: String) {
         battery = level
         batteryAt = Date()
+        batterySeen = true
         batteryHistory.insert((level, raw, Date()), at: 0)
         if batteryHistory.count > 4 { batteryHistory.removeLast() }
-        batteryReading = false
     }
 
     // MARK: Live device state
@@ -350,6 +384,7 @@ final class AppState: ObservableObject {
     /// to a device that had gone.
     private var deviceWatch: Timer?
     private var lastDeviceSignature = ""
+    private var hasPolledDevices = false
 
     func startDeviceWatch() {
         deviceWatch?.invalidate()
@@ -366,23 +401,34 @@ final class AppState: ObservableObject {
         let signature = found
             .map { "\($0.vendorID):\($0.productID):\($0.transport):\($0.usage)" }
             .sorted().joined(separator: "|")
+
+        // Track "have we polled at all" separately from the signature.
+        //
+        // These were conflated, and an empty signature means two different
+        // things: nothing polled yet, and polled but no mouse. Opening the app
+        // with the mouse switched off left the signature empty, so connecting
+        // it afterwards was misread as the first poll — which took an early
+        // return that skipped both the device list and the listener restart.
+        // That is the "connected it and the app still says not connected" bug.
+        let firstPoll = !hasPolledDevices
+        hasPolledDevices = true
+
         guard signature != lastDeviceSignature else { return }
 
-        // The first poll is not a change — it is the initial reading. Treating
-        // it as one restarted a listener that had just been started, which on a
-        // serial queue meant a second attempt stuck behind the first.
-        let firstPoll = lastDeviceSignature.isEmpty
         let wasConnected = !lastDeviceSignature.isEmpty
         lastDeviceSignature = signature
-        if firstPoll && !found.isEmpty {
-            detectLink()
-            return
-        }
+        // Always publish the device list, whatever else this poll decides.
+        // Every "is the mouse here" question in the UI reads it.
         devices = found
 
         if found.isEmpty {
             note("mouse disconnected — check the 2.4G / OFF / BT slider underneath")
+            // The mouse leaving the device list is the only evidence available
+            // that it has been switched off. Reading 2A19 is only safe once per
+            // power cycle, so this is the moment to re-allow it.
+            monitor.allowBatteryRead()
             battery = nil
+            batterySeen = false
             deviceActiveStage = nil
             stopMonitor()
             return
@@ -390,6 +436,10 @@ final class AppState: ObservableObject {
 
         let previous = link
         detectLink()
+        // The first poll needs no restart: MainView.onAppear has just called
+        // startMonitor, and restarting it queues a second loop behind the one
+        // still spinning on the serial queue.
+        if firstPoll { return }
         if !wasConnected || link != previous {
             note("connection changed — restarting the listener on \(link.rawValue)")
             deviceActiveStage = nil
@@ -418,20 +468,31 @@ final class AppState: ObservableObject {
                     self.baseline.activeStage = reported - 1
                     self.note("device switched to DPI stage \(reported)")
                 }
-            case StatusEvent.Code.battery.rawValue,
-                 StatusEvent.Code.batteryLevel.rawValue:
-                // The level the device volunteers, on either transport. It is
-                // reported in ten steps, so 40% means "4 of 10" and not a
-                // reading rounded down from something finer.
+            case StatusEvent.Code.battery.rawValue:
+                // 0x4010 is the only event the vendor renders. Its handler at
+                // 0x00413418 re-arms the watchdog first — before validating the
+                // level — so a malformed one still counts as a heartbeat.
+                self.armBatteryWatchdog()
+                self.batteryAsleep = event.isAsleep ?? false
                 guard let percent = event.batteryPercent else {
-                    self.note("battery event \(Hex.encode(raw)) — level out of range")
+                    // The vendor drops out at 0x00413452 without touching the
+                    // gauge when the level is outside 1...10, leaving the last
+                    // one on screen. Say so rather than blanking it.
+                    self.note("battery event \(Hex.encode(raw)) — level outside 1-10")
                     break
                 }
-                let asleep = event.isAsleep ?? false
                 self.recordBattery(
                     percent, raw: "event \(Hex.encode(raw))",
                     name: self.link.rawValue)
-                self.note("battery \(percent)%\(asleep ? " (asleep)" : "")")
+                self.note("battery \(percent)%"
+                    + (self.batteryAsleep ? " (asleep)" : ""))
+            case StatusEvent.Code.batteryLevel.rawValue:
+                // 0x6000 stores a 1...10 level into [page+0x174] at 0x004134ed
+                // and does nothing else — no gauge, no watchdog. That field is
+                // written in three places and read in none, so the store is
+                // dead and the event has no effect in the vendor UI. Log it and
+                // follow suit rather than inventing a use for it.
+                self.note("event \(Hex.encode(raw)) — 0x6000, ignored by the vendor too")
             case StatusEvent.Code.writeAck.rawValue:
                 break  // already logged by the send path
             default:
@@ -439,6 +500,21 @@ final class AppState: ObservableObject {
             }
         }
 
+        monitor.onBattery = { [weak self] level, raw, name in
+            guard let self else { return }
+            // Take the value as it came. Clamping belongs to the gauge; a level
+            // above 100 here means the characteristic was read before we got to
+            // it, and hiding that behind a clamp is how it went unnoticed for
+            // so long.
+            self.recordBattery(
+                level, raw: "\(name) 2A19=\(Hex.encode(raw))", name: name)
+            if level > 100 {
+                self.note("battery \(level)% — above 100, so 2A19 had already "
+                    + "been read since the mouse last powered up")
+            } else {
+                self.note("battery \(level)% (read once from 2A19)")
+            }
+        }
         monitor.onRetry = { [weak self] attempt, delay in
             guard let self else { return }
             // Only mention the first couple, or a mouse that is simply switched
@@ -451,12 +527,23 @@ final class AppState: ObservableObject {
         }
         monitor.onBatteryFailed = { [weak self] reason in
             self?.note("battery: \(reason)")
-            self?.batteryReading = false
         }
         monitor.onConnectionChange = { [weak self] up in
             guard let self else { return }
             self.monitorConnected = up
             self.note(up ? "listener connected" : "listener disconnected")
+            // The vendor arms the watchdog with Open_FeatureDevice and kills it
+            // with Close_FeatureDevice, so a mouse that never reports still
+            // lands on "asleep" six seconds after it appears, rather than
+            // sitting on a blank gauge for ever.
+            // The vendor's six-second heartbeat belongs to status event
+            // 0x4010. The Bluetooth link has its own source — one read of 2A19
+            // as the link comes up — so it must not be judged by that timer.
+            if up {
+                if self.link != .bluetooth { self.armBatteryWatchdog() }
+            } else {
+                self.killBatteryWatchdog()
+            }
             // No fallback read to make here. The level only ever arrives on
             // the listener's own event stream, so a lost link means waiting for
             // it to come back, not fetching from somewhere else.
@@ -466,14 +553,30 @@ final class AppState: ObservableObject {
     }
 
     func stopMonitor() {
+        killBatteryWatchdog()
         monitor.stop()
         monitorRunning = false
         monitorConnected = false
     }
 
+    /// Restart the listener, coalescing requests that arrive together.
+    ///
+    /// A link change reaches here twice: pollDevices calls it after detectLink,
+    /// and MainView's onChange fires on the same mutation. Two restarts mean two
+    /// stops and two delayed starts racing over one serial queue — the same
+    /// shape as the pile-up that used to wedge the listener. Cancel any pending
+    /// start so the last request wins and only one survives.
+    private var pendingRestart: DispatchWorkItem?
+
     func restartMonitor() {
+        pendingRestart?.cancel()
         stopMonitor()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { self.startMonitor() }
+        let work = DispatchWorkItem { [weak self] in
+            self?.pendingRestart = nil
+            self?.startMonitor()
+        }
+        pendingRestart = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
     }
 
     // MARK: Scroll direction

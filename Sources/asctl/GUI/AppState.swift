@@ -840,6 +840,48 @@ final class AppState: ObservableObject {
         }
     }
 
+    // MARK: Uninstalling
+
+    /// The uninstaller shipped inside the app bundle.
+    ///
+    /// It also travels in the disk image, but that is ejected once the app has
+    /// been dragged to Applications, so the copy in Resources is the only one
+    /// that survives. Settings used to point at the app's *containing*
+    /// directory — `/Applications/uninstall.sh` — which never existed, and
+    /// `activateFileViewerSelecting` on a missing path does nothing at all,
+    /// so the button appeared to be inert.
+    var uninstallerPath: URL? {
+        guard let path = Bundle.main.url(forResource: "uninstall", withExtension: "sh"),
+              FileManager.default.isReadableFile(atPath: path.path)
+        else { return nil }
+        return path
+    }
+
+    func revealUninstaller() {
+        guard let script = uninstallerPath else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([script])
+    }
+
+    /// Hand the script to Terminal so its questions can be answered.
+    ///
+    /// The uninstaller is interactive — it asks whether to keep your profiles —
+    /// so running it silently in the background would either hang on the prompt
+    /// or have to answer it on the user's behalf. Terminal also outlives this
+    /// process, which matters because the first thing the script does is quit
+    /// the app it is removing.
+    func runUninstaller() {
+        guard let script = uninstallerPath else { return }
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        task.arguments = ["-a", "Terminal", script.path]
+        do {
+            try task.run()
+            note("opened the uninstaller in Terminal")
+        } catch {
+            note("could not open the uninstaller: \(error.localizedDescription)")
+        }
+    }
+
     // MARK: Updates
 
     enum UpdateState: Equatable {

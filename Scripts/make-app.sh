@@ -64,6 +64,15 @@ printf 'APPL????' > "$APP/Contents/PkgInfo"
 # started from inside a bundle with no arguments.
 /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable asctl" "$APP/Contents/Info.plist"
 
+# Ship the uninstaller inside the bundle.
+#
+# It also travels in the disk image, but that is ejected and thrown away the
+# moment the app is dragged to Applications — after which the only copy is gone
+# and Settings' "reveal uninstaller" button pointed at a path that had never
+# existed. Keeping one here means the app can always produce it.
+cp Scripts/uninstall.sh "$APP/Contents/Resources/uninstall.sh"
+chmod +x "$APP/Contents/Resources/uninstall.sh"
+
 # Sign with a certificate when one is available, ad-hoc otherwise.
 #
 # This decides whether privacy permissions survive an update. An ad-hoc

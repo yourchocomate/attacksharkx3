@@ -1,408 +1,396 @@
 # asctl — Attack Shark X3 for macOS
 
-Attack Shark ship a Windows-only configuration tool. This project reverse-engineers
-its HID protocol and provides a native macOS command-line tool, so the mouse can be
-configured without Windows.
+A native macOS configuration tool for the Attack Shark X3 mouse. Sets DPI stages,
+polling rate, button mappings, macros, sensor options and power timers over the
+2.4 GHz receiver, the USB cable, or Bluetooth.
 
-No kernel extension, no daemon, no dependencies — one Swift binary talking to
-IOKit and CoreBluetooth.
+The vendor supplies configuration software for Windows only. This project
+reverse-engineers its HID protocol and reimplements it natively, with no kernel
+extension, no daemon and no dependencies — a single Swift binary using IOKit and
+CoreBluetooth, providing both a graphical interface and a command-line interface
+over shared protocol code.
+
+```bash
+asctl gui
+asctl dpi 800,1600,3200 --active 2
+```
+
+## Contents
+
+- [Background](#background)
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Permissions](#permissions)
+- [Feature status](#feature-status)
+- [Graphical interface](#graphical-interface)
+- [Command-line interface](#command-line-interface)
+- [Updating](#updating)
+- [Uninstalling](#uninstalling)
+- [Protocol notes](#protocol-notes)
+- [Implementation notes](#implementation-notes)
+- [Transports](#transports)
+- [Known issues](#known-issues)
+- [Contributing](#contributing)
+
+## Background
+
+The X3 ships with a Windows-only configuration utility. On macOS the mouse
+functions as a generic pointing device, and every hardware capability that
+utility exposes — DPI stages, polling rate, button remapping, macros, sensor
+tuning — is unreachable.
+
+A separate limitation is specific to macOS. The system provides a single
+"Natural scrolling" preference that applies simultaneously to the trackpad and
+to every connected mouse. There is no per-device setting, and the X3 provides no
+on-device alternative because that control resides in the Windows utility.
+Correcting wheel direction independently of the trackpad therefore requires
+host-side interception.
+
+The configuration protocol is write-only. The device accepts settings but
+provides no means of reading them back: no state query, no readback, no factory
+reset. This is confirmed by the vendor binary, which contains 29 calls to
+`SetFeature` and none to `GetFeature`. The vendor application does not read from
+the device either; it displays what it last transmitted.
+
+Two consequences follow, and they govern how this project is built and tested.
+A setting cannot be confirmed by reading it back, and the device acknowledges a
+malformed report exactly as it acknowledges a correct one. Acceptance therefore
+proves nothing. Every feature listed below was confirmed by operating the mouse
+and measuring the result.
+
+## Requirements
+
+- macOS 12 or later
+- Apple silicon or Intel
+- For building: the Xcode command line tools
+
+## Installation
+
+Download the [latest release](https://github.com/yourchocomate/attacksharkx3/releases/latest),
+open the disk image, and drag `asctl.app` to Applications. The release also
+includes a command-line-only tarball. Both are universal binaries.
+
+### First launch
+
+Release builds are ad-hoc signed rather than notarised, as notarisation requires
+a paid Apple Developer ID. Gatekeeper will refuse the first launch. Either remove
+the quarantine attribute:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/asctl.app
+```
+
+Or attempt to open the app, then approve it under **System Settings ▸ Privacy &
+Security ▸ Security ▸ Open Anyway**.
+
+Note that the older method of right-clicking and selecting Open no longer
+bypasses Gatekeeper on current macOS versions.
+
+### Building from source
 
 ```bash
 swift build -c release
-.build/release/asctl gui                 # graphical interface
-.build/release/asctl dpi 800,1600,3200 --active 2
+.build/release/asctl selftest      # verifies generated payloads; no hardware required
+INSTALL=1 Scripts/make-app.sh      # build the app bundle and install it
 ```
 
-There are two front ends over the same protocol code — a GUI that mirrors the
-vendor's layout, and a CLI. Neither is a wrapper around the other.
+## Permissions
 
-## Why this can work
+macOS attributes privacy permissions to the process that requests them. Grant
+them to `asctl.app` when using the application, or to your terminal emulator when
+using the CLI.
 
-There is no kernel driver and no encryption anywhere in this device's
-configuration path. **Settings are carried by plain HID feature reports**, which
-macOS supports natively through IOKit, and by standard GATT writes over
-Bluetooth. Nothing needs to be emulated.
-
----
-
-## Status
-
-Everything marked *verified* was tested against real hardware, not just accepted
-by the device. That distinction matters here more than usual — see
-[The one gotcha](#the-one-gotcha).
-
-| Feature | State |
+| Operation | Permission required |
 |---|---|
-| Polling rate — 125/250/500/1000 Hz | **verified** (`pollrate`) — measured, not assumed |
-| DPI stages + per-stage colour | **verified** (`dpi`) — multi-stage ladders, high-range stages |
-| Lift-off distance 1 mm / 2 mm | **verified** (`dpi --lod 2`) |
-| Ripple control | **verified** at high DPI, three replications (`dpi --ripple on`) |
-| Motion sync | **verified** at high DPI + 1000 Hz, three replications (`dpi --motionsync on`) |
-| Angle snap | verified, but rests on **n=2** — treat as provisional (`dpi --anglesnap on`) |
-| Macros | **verified** (`macro`) — upload, fragmentation, execution, keyboard + mouse events, loop count, all three loop modes |
-| Button mapping | **verified** (`buttons`) — full named action table, button order confirmed, factory defaults recoverable |
-| Bluetooth configuration | **verified** over GATT — same reports, same acknowledgements (`--ble`) |
-| Battery level | **verified over Bluetooth** — GATT `2A19`, read **once per power cycle**. Reading it increments it, so only the first read after the mouse powers up is true; asctl takes exactly one and caches it, which is what macOS does |
-| Status events — DPI stage, write acks | **verified** (`status`) |
-| Profiles | **host-side** (`profile save/apply/list`) — the device's own slots are unused by this product |
-| Device discovery, framing, raw feature-report I/O | working |
-| Checksum — 16-bit sum, big-endian | decoded, two implementations cross-checked |
-| Key debounce | **verified on hardware** (`power-test debounce`) — and the field counts **2 ms units**, so the vendor's "2-25" slider is really 4-50 ms |
-| Sleep / deep sleep | mapped with ranges; writes accepted, **behaviour unmeasured**. Three attempts to measure it were all invalid — see the protocol notes (`power`, `power-test sleep`/`wake`) |
-| Scroll direction vs macOS natural scrolling | **working** (`scroll standard`) — host-side event tap, wheel only, trackpad untouched |
-| Battery event `0x4010` | decoded from the vendor binary; **never observed firing** on either transport |
-| Move Wake | mapped — the vendor app **never transmits it**. Dead setting, not exposed |
-| Lighting | **not a feature of this hardware** — see below |
-| Reading current settings | **impossible** — the protocol is write-only |
+| Configuration over the 2.4 GHz receiver or USB cable | Input Monitoring |
+| Bluetooth configuration and battery level | Bluetooth |
+| Scroll-direction correction | Accessibility |
 
-### Lighting
+Bluetooth access is enforced per process. A process without it is terminated with
+`SIGABRT` and no diagnostic output, so Bluetooth commands should be run from a
+terminal that has been granted access, or from the app bundle.
 
-The X3 has **no user-controllable RGB**. The light beside the scroll wheel is a
-battery indicator: off on battery, magenta while charging, green at full.
+## Feature status
 
-The vendor's own tool does not expose a light settings panel for this model
-either. The lighting fields exist in the protocol because one implementation is
-shared across a product range; on the X3 nothing consumes them.
+Every entry marked **verified** was tested on physical hardware and confirmed by
+measurement — polling rate by timing the report stream, DPI by measuring pointer
+travel, debounce by timing click intervals, and so on. Nothing is marked verified
+on the strength of the device accepting a report, because the device accepts
+incorrect reports just as readily.
 
-`asctl light` is kept because that same report carries the sleep timers and key
-debounce, which do work. It warns you that the lighting half is inert.
+| Feature | Status |
+|---|---|
+| DPI stages and per-stage colour | Verified — multi-stage ladders, high-range stages |
+| Polling rate (125/250/500/1000 Hz) | Verified — measured report rate |
+| Button mapping | Verified — full action table, button order confirmed, factory defaults recoverable |
+| Macros | Verified — upload, fragmentation, execution, keyboard and mouse events, all loop modes |
+| Lift-off distance (1 mm / 2 mm) | Verified |
+| Ripple control | Verified at high DPI; three replications |
+| Motion sync | Verified at high DPI and 1000 Hz; three replications |
+| Angle snap | Verified, but n=2; treat as provisional |
+| Key debounce | Verified — field counts 2 ms units (see Implementation notes) |
+| Bluetooth configuration | Verified over GATT — identical reports and acknowledgements |
+| Battery level | Verified over Bluetooth — one read per power cycle (see Implementation notes) |
+| Status events (DPI stage, write acknowledgements) | Verified |
+| Scroll direction independent of macOS | Working — host-side event tap, wheel only |
+| Profiles | Host-side; the device's own profile slots are unused by this product |
+| Sleep and deep sleep timers | Mapped; writes accepted, behaviour unmeasured |
+| Battery event `0x4010` | Decoded from the vendor binary; not observed firing |
+| Lighting | Not implemented on this model (see Implementation notes) |
+| Reading current settings | Not possible — the protocol is write-only |
 
----
+## Graphical interface
 
-## The one gotcha
+`asctl gui` opens a window arranged like the vendor application: button and
+profile controls on the left, a mouse diagram in the centre, and a settings
+accordion on the right. It runs in the menu bar and reports the active DPI stage
+and battery level.
 
-**A config report sent on its own is acknowledged and then silently ignored.**
+Differences from the vendor application:
 
-It only takes effect if this preamble lands immediately before it:
+| | Vendor | asctl |
+|---|---|---|
+| Transport | Auto-detected; reduced feature set on Bluetooth | Selectable; full feature set on both |
+| Feedback | None; displays what it believes it sent | Every byte sent and every acknowledgement received |
+| Dry run | Not available | Preview exact bytes without writing |
+| DPI stage colour | 16 presets | Full RGB per stage |
+| Sensor options | Hidden on Bluetooth | Always available |
+| Bluetooth recovery | None | One-click controller cycle for the dead-cursor fault |
+
+The interface rejects button maps containing no left click and warns on
+mode-switch entries, both of which are unrecoverable without a known-good
+mapping.
+
+## Command-line interface
+
+```bash
+asctl list                                # connected interfaces and transport
+asctl dpi 800,1600,3200,6400 --active 2
+asctl pollrate 1000
+asctl buttons left,right,middle,dpi_cycle,mode_switch,forward,backward
+asctl power --sleep 10 --debounce 5
+asctl scroll standard
+asctl profile save daily
+asctl --ble dpi 1600                      # any write command accepts --ble
+asctl fix-bluetooth
+```
+
+`asctl help` documents the full surface. Any write can be previewed with
+`--dry-run`.
+
+`list`, `descriptor`, `probe`, `get`, `status` and `watch` are read-only.
+
+`set` and `send` write arbitrary bytes to the device. Not every command is
+mapped, so an unrecognised value could persist unexpected state to flash. No
+damage to an X3 has been observed, and no write here has been proven safe.
+
+## Updating
+
+The menu bar item includes an update check. It compares the installed version
+against the latest published release, verifies the download against the
+`SHA256SUMS.txt` published alongside it, retains the existing installation until
+the replacement is in place, and restarts into the new version.
+
+Because release builds are ad-hoc signed, the code signature contains no team
+identifier and the designated requirement macOS records is a hash of that
+specific build. Each release therefore presents as a distinct application, and
+**privacy permissions must be granted again after every update**. The application
+reports this on completion so that the resulting loss of Bluetooth access is not
+mistaken for a fault.
+
+## Uninstalling
+
+```bash
+Scripts/uninstall.sh              # prompts before removing saved profiles
+Scripts/uninstall.sh --keep-data  # remove the application, retain ~/.config/asctl
+Scripts/uninstall.sh --all        # remove everything
+```
+
+The script is also included in the disk image. It quits the running application,
+removes both launch agents, revokes the Privacy & Security entries, deletes the
+application and window preferences, and reports what it found before making any
+changes.
+
+Settings already written to the device are not affected. The protocol provides no
+readback and no factory reset, so the mouse retains its last configuration until
+something overwrites it.
+
+Profiles are stored in `~/.config/asctl`. As the device cannot be read back, that
+directory is the only existing record of a configuration, which is why the
+uninstaller prompts before removing it.
+
+## Protocol notes
+
+A configuration report sent in isolation is acknowledged and then ignored. It
+takes effect only when preceded immediately by:
 
 ```
 0C 0A 01 FE 01 FE 00 00 00 00
 ```
 
-`asctl` always sends it. Two consequences worth internalising if you extend this:
+`asctl` always sends this preamble. Two consequences are worth noting for anyone
+extending this work:
 
-1. `IOHIDDeviceSetReport` returning success proves the *transport* accepted the
-   bytes. It says nothing about whether the device applied the setting.
-2. The device's own acknowledgement (`0x5010` on the status channel) proves the
-   report was well-formed and received — still not that it was applied. A report
-   can be acked and do nothing at all.
+1. `IOHIDDeviceSetReport` returning success indicates that the transport accepted
+   the bytes. It carries no information about whether the device applied the
+   setting.
+2. The device's acknowledgement (`0x5010` on the status channel) indicates that
+   the report was well-formed and received. It does not indicate that the setting
+   was applied; a report can be acknowledged and have no effect.
 
-Always write, then *measure*.
+## Implementation notes
 
----
+Three features behave differently from what the protocol or the vendor interface
+suggests. Each is documented here because the difference is not discoverable from
+the wire format alone.
 
-## Install
+### Lighting is not implemented on this model
 
-Requires macOS 12+ and the Xcode command line tools.
+The protocol defines a complete lighting report: twelve modes, RGB colour,
+brightness and speed. On the X3 none of it has any effect. Reports are accepted
+and acknowledged, and nothing changes.
 
-```bash
-swift build -c release
-cp .build/release/asctl /usr/local/bin/     # optional
-```
+The light beside the scroll wheel is a battery and charge indicator, not
+addressable RGB — off on battery, magenta while charging, green at full. The
+vendor application does not expose a lighting panel for this model either. The
+protocol fields exist because one firmware serves a product range; on the X3
+nothing consumes them.
 
-### Install from a disk image
+`asctl light` is retained because the same report carries the sleep timers and
+key debounce, which do work. It warns that the lighting fields are inert.
 
-```bash
-Scripts/make-dmg.sh
-open build/asctl-0.1.0.dmg
-```
+### Battery level: one read per power cycle
 
-Drag `asctl.app` onto Applications. The image also carries `uninstall.sh` and a
-README, because an app dragged into place gives no hint that it later writes a
-login agent.
+The level is read from GATT characteristic `2A19`, the standard Bluetooth Battery
+Level, over the Bluetooth link.
 
-It is **ad-hoc signed, not notarised**, so the first launch needs right-click ▸
-Open — a double-click will be refused. Notarising needs a paid Developer ID.
+**Reading the characteristic increments it.** Three reads within a tenth of a
+second return values one apart; thirty seconds of idle time changes nothing. The
+value therefore reflects how many times it has been read since the mouse last
+powered on, not elapsed time, and it continues past 100 indefinitely. It resets
+only when the device power-cycles.
 
-### Uninstalling
+Only the first read after power-up returns the true level. `asctl` performs
+exactly one read when the Bluetooth link is established, caches the result, and
+does not read again until the mouse has been switched off and on. This is the
+same approach macOS takes: it reads once at connection and serves a cached value
+thereafter, which is why the figure in System Settings stays correct.
 
-```bash
-Scripts/uninstall.sh              # asks whether to keep your profiles
-Scripts/uninstall.sh --keep-data  # remove the app, keep ~/.config/asctl
-Scripts/uninstall.sh --all        # remove everything
-```
+Two consequences for users:
 
-It removes the app, both launch agents and the window preferences, and lists
-what it found first rather than claiming to remove things that were never there.
+- The level does not track discharge during a session. It is a snapshot from when
+  the link came up, and the interface shows when it was taken.
+- If another tool has read the characteristic since the mouse powered on, the
+  value will read high. Power-cycling the mouse restores it.
 
-Two things it cannot do, and says so: the Privacy & Security entries have to be
-removed by hand, because macOS offers no way to revoke them programmatically;
-and settings already written to the mouse stay there, because the protocol has
-no readback and no factory reset.
+The 2.4 GHz receiver has no equivalent. The vendor obtains the level there from a
+status event, `0x4010`, which carries a level of 1–10 in its high byte and is
+pushed by the device on a six-second interval. That event is decoded here but has
+not been observed firing.
 
-### The app bundle
+### Key debounce is expressed in 2 ms units
 
-`asctl gui` works from a terminal, but macOS attributes privacy permissions to
-the requesting process — so launched that way, Input Monitoring and Bluetooth
-are granted to your *terminal*. Building a bundle gives the app its own identity
-and its own entries in System Settings:
+The vendor interface presents key debounce as a slider labelled 2–25 ms, and the
+wire field accepts 2 to 25. Measured against click intervals, the resulting
+debounce floor is 2.00× the configured value.
 
-```bash
-Scripts/make-app.sh
-open build/asctl.app
-```
-
-The icon is generated by `Scripts/make-icon.swift`, which draws the same shell
-outline the in-app diagram uses. The vendor's own icon is deliberately not used:
-it is their logo, and this project does not redistribute vendor material.
-
-### Permissions
-
-| What you're doing | Grant |
-|---|---|
-| HID configuration over the receiver or cable | **Input Monitoring** |
-| Anything with `--ble`, `ble *`, or the GUI's battery/Bluetooth tools | **Bluetooth** |
-| `scroll` | **Accessibility** |
-
-Granted to whichever process asks: your terminal for the CLI, or `asctl.app` if
-you built the bundle.
-
-System Settings ▸ Privacy & Security. Bluetooth in particular is per-process
-TCC: a shell without it is killed with `SIGABRT` and no error message, so run
-BLE commands from an interactive terminal you have granted access.
-
----
-
-## The GUI
-
-`asctl gui` opens a window laid out like the vendor's: buttons and profile down
-the left, the mouse in the middle, a collapsible settings accordion on the
-right. What it adds:
-
-| | Vendor | asctl |
-|---|---|---|
-| Transport | auto-detected, Bluetooth loses features | pick 2.4 GHz/USB or Bluetooth; the whole feature set on both |
-| Feedback | none — it shows what it *believes* it set | every byte sent and every device acknowledgement, live |
-| Dry run | no | preview the exact bytes without writing |
-| DPI stage colour | 16 preset swatches | full RGB per stage |
-| Sensor toggles | hidden on Bluetooth | always reachable |
-| Bluetooth | no battery, no recovery | battery level, and a one-click controller cycle for the dead-cursor fault |
-
-The window will not let you write a button map with no left click, and it warns
-on the mode-switch entries — both are mistakes that cost real recovery work
-here.
-
-## Usage
-
-### Discovery
-
-```bash
-asctl list                 # Attack Shark interfaces (--all for every HID device)
-asctl descriptor           # dump and decode the HID report descriptor
-asctl probe                # read-only sweep of feature reports; never writes
-```
-
-```
-$ asctl list
-[0] 1D57:FA61  usage 01:02  USB  feat=0    in=7  USB Gaming Mouse
-[1] 1D57:FA61  usage 01:06  USB  feat=0    in=7  USB Gaming Mouse
-[2] 1D57:FA61  usage 01:06  USB  feat=0    in=8  USB Gaming Mouse
-[3] 1D57:FA61  usage 01:80  USB  feat=262  in=5  USB Gaming Mouse   ← config interface
-```
-
-### Sensor and pointer
-
-```bash
-asctl pollrate 1000
-asctl watch 5                          # measure the real report rate to verify
-
-asctl dpi 1600
-asctl dpi 400,800,1600,3200 --active 3
-asctl dpi 1600 --lod 2 --ripple on --anglesnap on --motionsync on
-```
-
-> Report `0x04` is **atomic**: DPI, all four sensor toggles and all eight stage
-> colours are written together, and none of them can be read back first. Passing
-> only `--lod` still rewrites your DPI ladder with the command's defaults. Set
-> everything you care about in one call, or use a profile.
-
-### Buttons and macros
-
-```bash
-asctl buttons defaults                 # restore the factory mapping
-asctl buttons left,right,middle,backward,forward,dpi_cycle
-asctl buttons left,right,middle,key:ctrl+c,forward,dpi_cycle
-
-asctl macro 1 "a:down:20,a:up:20" --repeat 5
-asctl macro 1 "a:down:20,a:up:20" --loop hold
-asctl buttons left,right,middle,macro:1,forward,dpi_cycle
-```
-
-Actions: `left right middle backward forward dpi_cycle dpi_up dpi_down
-scroll_up scroll_down mute volume_up volume_down play_pause next_track
-profile_cycle button_off`, plus `key:<combo>`, `macro:<n>`, `raw:<hh.hh.hh>`.
-
-> Also atomic, and the same warning applies with teeth: all 18 entries are
-> written together, so any button you omit becomes unassigned. **Entry 5 is the
-> mode-switch button** — remap it and you lose Bluetooth channel switching until
-> you run `asctl buttons defaults`. At least one button must be `left`, or you
-> cannot click to fix it.
-
-### Power
-
-```bash
-asctl power --sleep 10 --deepsleep 20 --debounce 5
-```
-
-Ranges: sleep and deep sleep 1–60 minutes, debounce 2–25.
-
-**Debounce counts 2 ms units**, measured on hardware — `--debounce 25` gives
-50 ms of real debounce. The value stays raw so it matches what the vendor
-writes. The sleep timers are accepted by the device but their behaviour has not
-been measured.
-
-### Profiles
-
-Host-side files in `~/.config/asctl/profiles`, replayed through the normal
-reports. The device's own profile slots are unused by this product.
-
-```bash
-asctl profile save gaming 3200 --active 1 --lod 1 --motionsync on
-asctl profile apply gaming
-asctl profile apply gaming --ble
-asctl profile list
-```
-
-### Bluetooth
-
-```bash
-asctl ble scan                # find the mouse and dump its GATT table
-asctl ble battery             # battery level — reads 2A19 once (see the note above)
-asctl ble listen 10           # watch the notify characteristic
-asctl buttons defaults --ble  # any write command takes --ble
-```
-
-### Scrolling
-
-Makes the wheel ignore macOS "Natural scrolling" without affecting the trackpad.
-
-```bash
-asctl scroll status               # what macOS is set to, and what each mode would do
-asctl scroll standard             # runs until Ctrl-C
-asctl scroll install standard     # run it at login
-asctl scroll uninstall
-
-asctl scroll debug                # dump raw scroll events, change nothing
-asctl scroll debug standard       # invert and log what each event became
-asctl scroll debug block          # zero every wheel delta
-```
-
-### Raw access
-
-```bash
-asctl get 0x09 64
-asctl set "09 40 01 00"
-asctl send 0x0C 0x01 "FE 01 FE"   # framed; fills in the length byte
-asctl status 15                   # decode device status events
-```
-
-Add `--dry-run` to any write to print the exact bytes and send nothing.
-
----
+The field counts 2 ms units, so the vendor's stated 2–25 ms range is actually
+4–50 ms. `asctl` transmits the raw value so that settings match between the two
+applications, and displays the effective figure alongside it.
 
 ## Transports
 
 | Transport | Channel | Configuration |
 |---|---|---|
-| 2.4 GHz receiver | HID feature reports | yes |
-| USB cable | HID feature reports | yes |
-| Bluetooth | **GATT** — service `FEE0`, write `FEE3`, notify `FEE4` | yes, with `--ble` |
+| 2.4 GHz receiver | HID feature reports | Yes |
+| USB cable | HID feature reports | Yes |
+| Bluetooth | GATT — service `FEE0`, write `FEE3`, notify `FEE4` | Yes, with `--ble` |
 
-Over Bluetooth the mouse exposes a 1-byte maximum feature report, so HID
-feature reports cannot carry configuration there. The same commands work over
-GATT instead — which is what the vendor app does too. Subscribing to `FEE4` is
-mandatory: writes sent before subscribing are silently discarded.
+Over Bluetooth the device exposes a one-byte maximum feature report, so HID
+feature reports cannot carry configuration. The same commands are sent over GATT
+instead, which is also what the vendor application does. Subscribing to `FEE4` is
+mandatory; writes issued before subscription are discarded silently.
 
-The mouse clones Microsoft's `045E:0040` over Bluetooth, so a genuine Microsoft
-mouse would also match that identity.
+The device presents Microsoft's `045E:0040` identity over Bluetooth, so a genuine
+Microsoft mouse will also match that identifier.
 
----
+## Known issues
 
-## Known issue: dead cursor after a Bluetooth reconnect
+### Dead cursor after a Bluetooth reconnection
 
-The mouse sometimes reconnects over Bluetooth with working buttons and a dead
-cursor. This is a **firmware fault**: in that state every configuration report —
-including the one that programs the sensor's own registers — is delivered and
-acknowledged, and none of them restarts motion reporting. Only tearing down the
-Bluetooth link clears it.
+The mouse occasionally reconnects over Bluetooth with functioning buttons and no
+pointer movement. This is a firmware fault. In that state every configuration
+report, including the one that programs the sensor's registers, is delivered and
+acknowledged, and none restores motion reporting. Only tearing down the Bluetooth
+link clears it.
 
 ```bash
-asctl fix-bluetooth     # cycles the controller, verifying each transition
+asctl fix-bluetooth
 ```
 
-It does not happen over the 2.4 GHz receiver.
-
----
-
-## Safety
-
-`list`, `descriptor`, `probe`, `get`, `status` and `watch` are read-only and
-safe. Any write can be previewed with `--dry-run`.
-
-`set` and `send` write arbitrary bytes to your mouse. Not every command is
-mapped, so an invented value could persist unexpected state to flash. Nothing
-here is known to have damaged an X3 — and nothing here has been proven safe
-either. Treat writes as experimental.
-
-The one recoverable mistake already made and documented: remapping button entry
-5 disables the mode-switch button. `asctl buttons defaults` restores it.
-
----
+The fault does not occur over the 2.4 GHz receiver.
 
 ## Contributing
 
-The single most valuable contribution is **ground truth from a USB capture**:
-run the Windows software (natively or under Wine/CrossOver), change exactly one
-setting, and capture the feature report it sends. That converts an inference
-into a fact with no risk to any hardware.
+The most valuable contribution is ground truth from a USB capture: run the
+Windows utility, change a single setting, and capture the resulting feature
+report. This converts an inference into a fact without risk to hardware.
 
-Also wanted:
+Also of interest:
 
-- **Confirmation of the `1D57:FA60` identity.** Only `FA61` has been seen.
-- **Other Attack Shark models.** The report framing looks shared across the
-  range, so it may well generalise. `asctl light-probe` is kept specifically so
-  lighting can be re-tested on a model that actually has it.
-- **The battery event `0x4010`.** Decoded but never observed firing, on either
-  transport. The vendor arms a six-second watchdog for it and shows a sleep
-  label when it lapses, so it should be routine on a working vendor setup —
-  which makes its absence here the open question. Untried: the mouse on
-  battery power with the 2.4 GHz receiver connected.
-- **Measuring the sleep timers**, which are currently write-accepted but
-  unverified. `asctl power-test sleep` watches for the Bluetooth link to drop,
-  which is the only unambiguous signal — a mouse nobody is moving is silent
-  whether it is asleep or awake.
-- **A third replication of angle snap**, which still rests on n=2.
+- **Other Attack Shark models.** The report framing appears to be shared across
+  the range. `asctl light-probe` is retained so that lighting can be re-tested on
+  a model that implements it.
+- **The battery event `0x4010`.** Decoded from the vendor binary but never
+  observed firing on either transport. The vendor application arms a six-second
+  watchdog for it and displays a sleep indicator when it lapses, which suggests
+  the event is routine on a supported configuration. Untested: the mouse running
+  on battery power with the receiver connected.
+- **Measurement of the sleep timers**, currently accepted by the device but
+  unverified.
+- **A third replication of angle snap**, which currently rests on n=2.
+- **Confirmation of the `1D57:FA60` identity.** Only `FA61` has been observed.
 
-### A note on method
+### Verification approach
 
-Several conclusions in this project were wrong on the first pass, and the
-failure mode was consistent: **a null result at the wrong operating point**.
-Ripple control looked inert until tested at high DPI; motion sync until 1000 Hz;
-Bluetooth channel switching because it was tested on 2.4 GHz. Two replications
-were not enough — motion sync nearly produced a false positive at n=2.
+Because the protocol is write-only and the device acknowledges malformed reports,
+no feature here is accepted on the basis that a write succeeded. Each was
+exercised on hardware and measured: polling rate by timing the input report
+stream, DPI by pointer travel, debounce by click intervals, lift-off distance and
+the sensor options by controlled movement at the operating points where they
+apply.
 
-Lighting was the sharpest version of it. Sweeps were designed and run before
-establishing that the feature existed at all, and no amount of sweeping could
-have answered that. **When a feature's existence is in doubt, settle that before
-designing experiments to measure it** — a null result cannot distinguish "not
-implemented here" from "implemented and I sent it wrong".
+Two failure modes recur often enough to be worth stating for anyone extending
+this:
 
----
+- **A null result at the wrong operating point.** Ripple control appears inert
+  until tested at high DPI; motion sync until 1000 Hz is also set. Two
+  replications proved insufficient — motion sync came close to a false positive
+  at n=2, which is why angle snap is still marked provisional.
+- **A sampling rate that makes two explanations indistinguishable.** Reading the
+  battery characteristic once per second cannot separate "increments per read"
+  from "increments per second". Varying the interval resolves it immediately.
 
-## Layout
+Where a feature's existence is uncertain, establish that before designing
+experiments to measure it. A null result cannot distinguish a feature that is
+absent from one that is present and being driven incorrectly.
+
+## Repository layout
 
 ```
-Scripts/make-app.sh      Wraps the binary in asctl.app
+Scripts/make-app.sh      Builds asctl.app (INSTALL=1 also installs it)
 Scripts/make-dmg.sh      Builds a drag-to-install disk image
-Scripts/make-icon.swift  Draws the app icon
-Scripts/uninstall.sh     Removes the app, agents and (optionally) your data
+Scripts/make-icon.swift  Generates the application icon
+Scripts/uninstall.sh     Removes the application, agents, permissions and data
 Sources/asctl/
   GUI/                   SwiftUI interface (asctl gui)
-    MainView.swift         Three-column window, mirroring the vendor layout
-    AppState.swift         Editable configuration + apply logic
-    MouseDiagram.swift     Drawn mouse with per-button callouts
+    MainView.swift         Three-column window
+    AppState.swift         Editable configuration and apply logic
+    MouseDiagram.swift     Mouse diagram with per-button callouts
     Sections.swift         Accordion, sliders, DPI rows, log pane
-    Transport.swift        Sending over HID or GATT with a log
+    StatusMonitor.swift    Device event listener
+    MenuBarView.swift      Menu bar popover and update control
+    Transport.swift        HID and GATT transmission with logging
     GUIApp.swift           NSApplication bootstrap
   HID.swift              IOKit device discovery and feature-report I/O
   BLE.swift              CoreBluetooth GATT transport
@@ -410,19 +398,26 @@ Sources/asctl/
   ReportDescriptor.swift HID report descriptor parser
   Watch.swift            Input-report capture and rate measurement
   Profile.swift          Host-side profiles
-  Scroll.swift           Scroll-direction event tap
+  Scroll.swift           Scroll-direction event tap and login agents
+  Updater.swift          Release checking, verification and installation
+  Version.swift          Version reporting and comparison
   BluetoothPower.swift   Bluetooth controller power cycling
-  LightProbe.swift       Lighting sweep, for models that have lighting
+  LightProbe.swift       Lighting sweep, retained for models with lighting
+  PowerTest.swift        Debounce and sleep-timer measurement
+  BatteryProbe.swift     Battery characteristic investigation
+  AppPaths.swift         Configuration and profile locations
+  SelfTest.swift         Payload verification without hardware
   main.swift             CLI surface
 ```
 
----
-
 ## Legal
 
-Reverse engineering for interoperability — producing software that works with
-hardware you own. No vendor code is copied, redistributed, or included in this
-repository; it contains only original code and a description of an interface.
+This project constitutes reverse engineering for interoperability: producing
+software that operates with hardware the user owns. No vendor code is copied,
+redistributed or included in this repository, which contains only original code
+and a description of an interface.
+
+Not affiliated with or endorsed by Attack Shark.
 
 ## Author
 

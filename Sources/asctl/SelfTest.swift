@@ -223,6 +223,24 @@ enum SelfTest {
         expect("an unknown value does not decode",
                ScrollDirection(rawValue: "sideways") == nil, true)
 
+        // Version comparison — the updater decides what to offer with this.
+        //
+        // A string comparison gets 0.10.0 vs 0.9.0 backwards, and an updater
+        // that thinks the newest release is older than what is installed simply
+        // never offers it. That failure is silent, so it is worth a test.
+        print("\nVersion comparison")
+        expect("0.10.0 is newer than 0.9.0", AppVersion.isNewer("0.10.0", than: "0.9.0"), true)
+        expect("0.9.0 is not newer than 0.10.0", AppVersion.isNewer("0.9.0", than: "0.10.0"), false)
+        expect("0.2.0 is newer than 0.1.0", AppVersion.isNewer("0.2.0", than: "0.1.0"), true)
+        expect("equal versions are not newer", AppVersion.isNewer("1.2.3", than: "1.2.3"), false)
+        expect("a v prefix is ignored", AppVersion.isNewer("v1.0.1", than: "1.0.0"), true)
+        expect("a missing component counts as zero",
+               AppVersion.isNewer("1.1", than: "1.0.9"), true)
+        expect("1.0 equals 1.0.0",
+               AppVersion.compare("1.0", "1.0.0") == .orderedSame, true)
+        expect("a suffix does not make it newer",
+               AppVersion.isNewer("1.0.0-beta", than: "1.0.0"), false)
+
         print("\n\(checks - failures)/\(checks) checks passed")
         if failures > 0 {
             print("\(failures) FAILED")

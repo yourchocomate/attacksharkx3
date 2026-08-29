@@ -108,6 +108,7 @@ COMMANDS
   ble write <hex>          Write a config buffer to the FEE3 characteristic
   ble battery              Read the battery level over Bluetooth (GATT 2A19)
   ble listen [seconds]     Listen on the FEE4 notify characteristic
+  version                  Print the version this build reports
   battery-probe [seconds]  Listen for the battery level the device volunteers
   macos-battery            Find out whether macOS reads 2A19 for its figure
   blediag [seconds]        Dump GATT, five battery reads, and every notify
@@ -1637,6 +1638,9 @@ case "power-test":
     }
 case "blediag": commandBLEDiag(options)
 case "macos-battery": exit(MacOSBatterySource.run())
+case "version", "--version", "-v":
+  print("asctl \(AppVersion.current) (build \(AppVersion.build))")
+  exit(0)
 case "battery-probe":
   exit(BatteryProbe.run(seconds: TimeInterval(options.positionals.first.flatMap(Int.init) ?? 120)))
 case "light": commandLight(options)

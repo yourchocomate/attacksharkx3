@@ -840,6 +840,96 @@ final class AppState: ObservableObject {
         }
     }
 
+    // MARK: Updates
+
+    enum UpdateState: Equatable {
+        case idle
+        case checking
+        case upToDate
+        case available(version: String)
+        case installing(String)
+        case installed(version: String)
+        case failed(String)
+    }
+
+    @Published var updateState: UpdateState = .idle
+    private var pendingUpdate: Updater.Release?
+
+    var updateSummary: String {
+        switch updateState {
+        case .idle: return "Check for updates"
+        case .checking: return "Checking…"
+        case .upToDate: return "Up to date (\(AppVersion.current))"
+        case .available(let version): return "Update to \(version)"
+        case .installing(let step): return step
+        case .installed(let version): return "Installed \(version) — restarting"
+        case .failed(let reason): return reason
+        }
+    }
+
+    var updateIsBusy: Bool {
+        switch updateState {
+        case .checking, .installing: return true
+        default: return false
+        }
+    }
+
+    func checkForUpdate() {
+        guard !updateIsBusy else { return }
+        updateState = .checking
+        Updater.check { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                switch result {
+                case .success(let release):
+                    self.pendingUpdate = release
+                    if let release {
+                        self.updateState = .available(version: release.version)
+                        self.note("update \(release.version) is available "
+                            + "(this is \(AppVersion.current))")
+                    } else {
+                        self.updateState = .upToDate
+                        self.note("no update — \(AppVersion.current) is current")
+                    }
+                case .failure(let error):
+                    self.updateState = .failed(error.localizedDescription)
+                    self.note("update check: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    /// Download and install the release found by the last check.
+    ///
+    /// Deliberately a second, explicit step. Checking is harmless; replacing the
+    /// app the user is running is not, and doing both on one click would leave
+    /// no moment to decline.
+    func installUpdate() {
+        guard case .available = updateState, let release = pendingUpdate else { return }
+        updateState = .installing("starting")
+        Updater.install(release) { [weak self] step, _ in
+            DispatchQueue.main.async { self?.updateState = .installing(step) }
+        } completion: { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                switch result {
+                case .success:
+                    self.updateState = .installed(version: release.version)
+                    self.note("installed \(release.version) — restarting")
+                    if let bundle = Updater.installedBundle() {
+                        Updater.relaunch(bundle)
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                            NSApplication.shared.terminate(nil)
+                        }
+                    }
+                case .failure(let error):
+                    self.updateState = .failed(error.localizedDescription)
+                    self.note("update failed: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
     /// Bring the login-item state up to date without blocking the UI.
     func refreshLaunchAtLogin() {
         DispatchQueue.global(qos: .utility).async { [weak self] in

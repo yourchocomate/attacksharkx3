@@ -186,6 +186,12 @@ final class GUIAppDelegate: NSObject, NSApplicationDelegate {
         NSWorkspace.shared.activateFileViewerSelecting([AppPaths.configDirectory])
     }
 
+    /// Check from the app menu, and open the panel that shows the result.
+    @objc func checkForUpdates() {
+        state.checkForUpdate()
+        togglePopover()
+    }
+
     @objc func openSettings() {
         showWindow()
         NotificationCenter.default.post(name: .asctlShowSettings, object: nil)
@@ -248,6 +254,10 @@ private func installMenuBar() {
     appMenu.addItem(
         withTitle: "About asctl", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
         keyEquivalent: "")
+    let updateItem = appMenu.addItem(
+        withTitle: "Check for Updates…", action: #selector(GUIAppDelegate.checkForUpdates),
+        keyEquivalent: "")
+    updateItem.target = NSApp.delegate
     appMenu.addItem(.separator())
     let settingsItem = appMenu.addItem(
         withTitle: "Settings…", action: #selector(GUIAppDelegate.openSettings),

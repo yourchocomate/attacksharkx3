@@ -40,6 +40,8 @@ struct MenuBarView: View {
             .padding(14)
 
             Divider()
+            updateRow
+            Divider()
             footer
         }
         .frame(width: 260)
@@ -138,6 +140,54 @@ struct MenuBarView: View {
                 Text(state.scrollMode.short).font(.system(size: 12))
                 Spacer()
             }
+        }
+    }
+
+    /// Checking is one click; installing is a second, deliberate one.
+    ///
+    /// Replacing the running app is not something to do on a mis-click, and the
+    /// version being offered is worth seeing before it is taken.
+    private var updateRow: some View {
+        HStack(spacing: 8) {
+            Image(systemName: updateIcon)
+                .font(.system(size: 11))
+                .foregroundStyle(updateTint)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(state.updateSummary)
+                    .font(.system(size: 11))
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("this build: \(AppVersion.current)")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.tertiary)
+            }
+            Spacer()
+            if case .available = state.updateState {
+                Button("Install") { state.installUpdate() }
+                    .font(.system(size: 11))
+            } else if !state.updateIsBusy {
+                Button("Check") { state.checkForUpdate() }
+                    .font(.system(size: 11))
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 9)
+    }
+
+    private var updateIcon: String {
+        switch state.updateState {
+        case .available, .installed: return "arrow.down.circle.fill"
+        case .failed: return "exclamationmark.triangle"
+        case .checking, .installing: return "arrow.triangle.2.circlepath"
+        default: return "arrow.down.circle"
+        }
+    }
+
+    private var updateTint: Color {
+        switch state.updateState {
+        case .available, .installed: return .green
+        case .failed: return .orange
+        default: return .secondary
         }
     }
 

@@ -64,11 +64,37 @@ printf 'APPL????' > "$APP/Contents/PkgInfo"
 # started from inside a bundle with no arguments.
 /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable asctl" "$APP/Contents/Info.plist"
 
-# Ad-hoc signing keeps the TCC grant stable across rebuilds. Without a stable
-# signature macOS treats each rebuild as a different app and re-prompts.
-codesign --force --deep --sign - "$APP" 2>/dev/null \
-  && echo "signed (ad-hoc)" \
-  || echo "note: codesign failed — the app still runs, but permissions may re-prompt after each rebuild"
+# Sign with a certificate when one is available, ad-hoc otherwise.
+#
+# This decides whether privacy permissions survive an update. An ad-hoc
+# signature has no certificate, so the designated requirement macOS records is
+# a hash of this exact build — measured: `cdhash H"c55eff…"`. TCC stores that,
+# every build hashes differently, and so every update re-prompts for Input
+# Monitoring, Bluetooth and Accessibility.
+#
+# Signing with a certificate, even an untrusted self-signed one, produces
+# `identifier "…" and certificate root = H"…"` instead, which is identical for
+# every build signed with the same certificate. Verified on two builds with
+# different code hashes: the requirement strings matched exactly.
+#
+# Scripts/make-signing-cert.sh generates the certificate. Gatekeeper is
+# unaffected either way — that needs notarisation.
+if [ -n "${SIGN_IDENTITY:-}" ]; then
+    SIGN_ARGS=(--force --deep --sign "$SIGN_IDENTITY")
+    [ -n "${SIGN_KEYCHAIN:-}" ] && SIGN_ARGS+=(--keychain "$SIGN_KEYCHAIN")
+    if codesign "${SIGN_ARGS[@]}" "$APP" 2>/dev/null; then
+        echo "signed with: $SIGN_IDENTITY"
+        codesign -dr - "$APP" 2>&1 | grep designated || true
+    else
+        echo "error: signing with '$SIGN_IDENTITY' failed" >&2
+        exit 1
+    fi
+else
+    codesign --force --deep --sign - "$APP" 2>/dev/null \
+      && echo "signed (ad-hoc — permissions will re-prompt after every update;" \
+      && echo "         see Scripts/make-signing-cert.sh)" \
+      || echo "note: codesign failed — the app still runs, but macOS will treat it as unidentified"
+fi
 
 echo
 echo "done: $APP"

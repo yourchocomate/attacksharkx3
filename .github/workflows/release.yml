@@ -65,6 +65,58 @@ jobs:
           /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" \
             Sources/asctl/Info.plist
 
+      # Import the signing certificate, if one is configured.
+      #
+      # This is what makes privacy permissions survive an update. Without a
+      # certificate the signature is ad-hoc, the designated requirement macOS
+      # records is a hash of that one build, and TCC treats each release as a
+      # different application. With one, the requirement names the certificate
+      # instead and is identical for every build it signs.
+      #
+      # Absent secrets are not an error — forks and pull requests still build,
+      # ad-hoc, exactly as before. See Scripts/make-signing-cert.sh.
+      - name: Set up code signing
+        env:
+          CERT_BASE64: ${{ secrets.MACOS_SIGNING_CERT }}
+          CERT_PASSWORD: ${{ secrets.MACOS_SIGNING_PASSWORD }}
+        run: |
+          if [ -z "$CERT_BASE64" ]; then
+            echo "no signing certificate configured — this build will be ad-hoc signed"
+            echo "permissions will re-prompt after updating to it"
+            exit 0
+          fi
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 24)"
+          echo "$CERT_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 3600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" \
+            -P "$CERT_PASSWORD" -T /usr/bin/codesign -A
+          # Without this, codesign blocks on a keychain prompt that no one can
+          # answer on a runner, and the job hangs until it times out.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN" \
+            $(security list-keychains -d user | tr -d '"')
+          rm -f "$RUNNER_TEMP/cert.p12"
+
+          # Not `find-identity -v`: a self-signed certificate is untrusted, so
+          # the "valid identities" list is empty even though signing with it
+          # works. The line also ends in (CSSMERR_TP_NOT_TRUSTED) rather than a
+          # quote, so extract the quoted name rather than anchoring to the end.
+          IDENTITY="$(security find-identity -p codesigning "$KEYCHAIN" \
+            | sed -n 's/^[[:space:]]*[0-9][0-9]*)[[:space:]]*[0-9A-Fa-f]*[[:space:]]*"\([^"]*\)".*/\1/p' \
+            | head -1)"
+          if [ -z "$IDENTITY" ]; then
+            echo "the certificate imported but no code-signing identity came with it"
+            exit 1
+          fi
+          echo "signing identity: $IDENTITY"
+          echo "SIGN_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+          echo "SIGN_KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
+
       - name: Build both architectures
         run: |
           swift build -c release
@@ -99,6 +151,22 @@ jobs:
         env:
           ASCTL_BINARY: ${{ github.workspace }}/dist/asctl
         run: ./Scripts/make-dmg.sh dist
+
+      - name: Sign the CLI binary
+        run: |
+          if [ -n "${SIGN_IDENTITY:-}" ]; then
+            codesign --force --sign "$SIGN_IDENTITY" --keychain "$SIGN_KEYCHAIN" dist/asctl
+          else
+            codesign --force --sign - dist/asctl
+          fi
+
+      # Record what the download will actually claim to be. The requirement is
+      # the thing that determines whether permissions survive, so it belongs in
+      # the log rather than being taken on trust.
+      - name: Report the designated requirements
+        run: |
+          echo "app:"; codesign -dr - dist/asctl.app 2>&1 | grep designated
+          echo "cli:"; codesign -dr - dist/asctl 2>&1 | grep designated
 
       - name: Package the CLI on its own
         run: |
@@ -196,6 +264,15 @@ jobs:
             `~/.config/asctl`, which holds your profiles — and since the mouse
             cannot be read back, that folder is the only record of a
             configuration that exists anywhere.
+
+      - name: Remove the signing keychain
+        if: always()
+        run: |
+          if [ -n "${SIGN_KEYCHAIN:-}" ] && [ -f "$SIGN_KEYCHAIN" ]; then
+            security list-keychains -d user -s \
+              $(security list-keychains -d user | tr -d '"' | grep -v "$SIGN_KEYCHAIN") || true
+            security delete-keychain "$SIGN_KEYCHAIN" || true
+          fi
 
       - name: Upload artifacts when run by hand
         if: "!startsWith(github.ref, 'refs/tags/')"

@@ -15,3 +15,11 @@ dist/
 
 # Local working notes
 docs/PROTOCOL.md
+
+# Code-signing certificate and private key.
+#
+# Losing this means future releases get a different designated requirement and
+# everyone re-grants permissions once more, so keep a backup — but never here.
+signing/
+*.p12
+*.p12.base64

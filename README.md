@@ -191,12 +191,42 @@ against the latest published release, verifies the download against the
 `SHA256SUMS.txt` published alongside it, retains the existing installation until
 the replacement is in place, and restarts into the new version.
 
-Because release builds are ad-hoc signed, the code signature contains no team
-identifier and the designated requirement macOS records is a hash of that
-specific build. Each release therefore presents as a distinct application, and
-**privacy permissions must be granted again after every update**. The application
-reports this on completion so that the resulting loss of Bluetooth access is not
-mistaken for a fault.
+Permissions survive an update provided the release was signed with a
+certificate. macOS records a *designated requirement* when permissions are
+granted, and what that requirement contains depends on how the build was signed:
+
+| Signature | Designated requirement | Permissions after an update |
+|---|---|---|
+| Ad-hoc | `cdhash H"…"` — a hash of one specific build | Must be granted again |
+| Certificate | `identifier "…" and certificate root = H"…"` | Preserved |
+
+Release builds are signed with a self-signed certificate, which is enough to
+make the requirement stable — it is identical for every build the certificate
+signs, so TCC continues to recognise the application. A build produced without
+the certificate falls back to ad-hoc signing and will re-prompt; the application
+says so when it finishes updating, so the resulting loss of Bluetooth access is
+not mistaken for a fault.
+
+This does not affect Gatekeeper. A self-signed certificate is trusted by
+nothing, so the first launch still requires the step described under
+[First launch](#first-launch). Removing that step requires notarisation, which
+requires a paid Apple Developer ID.
+
+### Signing your own builds
+
+`Scripts/make-signing-cert.sh` generates the certificate and prints instructions
+for adding it to the repository as the secrets `MACOS_SIGNING_CERT` and
+`MACOS_SIGNING_PASSWORD`. The release workflow uses them when present and falls
+back to ad-hoc signing when absent, so forks and pull requests still build.
+
+To sign locally, import the certificate and set `SIGN_IDENTITY`:
+
+```bash
+SIGN_IDENTITY="asctl self-signed" Scripts/make-app.sh
+```
+
+Keep a backup of the certificate. Replacing it changes the designated
+requirement, which costs every existing installation its permissions once.
 
 ## Uninstalling
 

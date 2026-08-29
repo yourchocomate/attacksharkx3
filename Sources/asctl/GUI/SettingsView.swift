@@ -22,7 +22,7 @@ struct SettingsView: View {
                         set: { state.setLaunchAtLogin($0) }
                     ))
                     .toggleStyle(.switch)
-                    .disabled(!state.canLaunchAtLogin)
+                    .disabled(!state.canLaunchAtLogin || state.launchAtLoginBusy)
 
                     if state.launchAtLogin && !state.launchAtLoginRegistered {
                         Text("launchd has not accepted the login item, so asctl "

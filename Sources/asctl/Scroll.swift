@@ -465,14 +465,23 @@ enum ScrollController {
         /// Whether launchd has actually accepted the job, as opposed to a plist
         /// merely existing on disk. These are different things, and only this
         /// one predicts what happens at the next login.
+        ///
+        /// **Never call this on the main thread.** It runs a subprocess, and
+        /// `waitUntilExit` pumps the calling run loop while it waits. On the
+        /// main thread that lets AppKit re-enter layout, which re-evaluates
+        /// SwiftUI bodies, which called this again — a nested wait that
+        /// segfaulted the moment the login switch was touched.
         static var registered: Bool {
-            launchctl(["print", "gui/\(getuid())/\(label)"]) == 0
+            dispatchPrecondition(condition: .notOnQueue(.main))
+            return launchctl(["print", "gui/\(getuid())/\(label)"]) == 0
         }
 
         private static func bootout() {
             _ = launchctl(["bootout", "gui/\(getuid())/\(label)"])
         }
 
+        /// Run launchctl and wait. Callers must be off the main thread — see
+        /// `registered` for what happens otherwise.
         @discardableResult
         private static func launchctl(_ arguments: [String]) -> Int32 {
             let task = Process()

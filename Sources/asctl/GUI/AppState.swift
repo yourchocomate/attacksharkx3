@@ -791,31 +791,66 @@ final class AppState: ObservableObject {
     /// identified by path and loses them.
     var canLaunchAtLogin: Bool { ScrollController.AppLogin.launcher != nil }
 
+    /// Whether launchd holds the job, refreshed off the main thread.
+    ///
+    /// A stored value, never a computed one. It used to run `launchctl` inside
+    /// its getter, and SettingsView read it from a view body — so a subprocess
+    /// was spawned on every layout pass, on the main thread, where
+    /// `waitUntilExit` pumps the run loop. That let AppKit re-enter layout,
+    /// which re-evaluated the body, which called the getter again. The nested
+    /// wait segfaulted as soon as the switch was touched.
+    @Published var launchAtLoginRegistered = false
+    @Published var launchAtLoginBusy = false
+
     func setLaunchAtLogin(_ on: Bool) {
-        do {
-            if on {
-                try ScrollController.AppLogin.install()
-                note("will open at login, and keep running in the menu bar")
-            } else {
-                try ScrollController.AppLogin.uninstall()
-                note("will no longer open at login")
+        guard !launchAtLoginBusy else { return }
+        launchAtLoginBusy = true
+        launchAtLogin = on
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            var failure: String?
+            do {
+                if on {
+                    try ScrollController.AppLogin.install()
+                } else {
+                    try ScrollController.AppLogin.uninstall()
+                }
+            } catch {
+                failure = error.localizedDescription
             }
-            launchAtLogin = ScrollController.AppLogin.installed
-            // Report what launchd made of it, not just that a file was written.
-            // A plist naming a program that does not exist installs perfectly
-            // and then does nothing at login, which is how this went unnoticed.
-            if on && !ScrollController.AppLogin.registered {
-                note("login item: launchd did not accept the job — it will not "
-                    + "open at login")
+            let installed = ScrollController.AppLogin.installed
+            let registered = installed && ScrollController.AppLogin.registered
+
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.launchAtLogin = installed
+                self.launchAtLoginRegistered = registered
+                self.launchAtLoginBusy = false
+                if let failure {
+                    self.note("login item: \(failure)")
+                } else if on && !registered {
+                    self.note("login item: launchd did not accept the job — it "
+                        + "will not open at login")
+                } else if on {
+                    self.note("will open at login, and keep running in the menu bar")
+                } else {
+                    self.note("will no longer open at login")
+                }
             }
-        } catch {
-            note("login item: \(error.localizedDescription)")
-            launchAtLogin = ScrollController.AppLogin.installed
         }
     }
 
-    /// Whether launchd holds the job, as opposed to a plist merely existing.
-    var launchAtLoginRegistered: Bool { ScrollController.AppLogin.registered }
+    /// Bring the login-item state up to date without blocking the UI.
+    func refreshLaunchAtLogin() {
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let installed = ScrollController.AppLogin.installed
+            let registered = installed && ScrollController.AppLogin.registered
+            DispatchQueue.main.async {
+                self?.launchAtLogin = installed
+                self?.launchAtLoginRegistered = registered
+            }
+        }
+    }
 
     // MARK: Profiles
 

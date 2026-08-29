@@ -15,13 +15,20 @@ concurrency:
 
 jobs:
   build:
-    # Single arm64 runner. The Intel runners GitHub used to offer are retired,
-    # and a matrix entry for one sits queued indefinitely rather than failing —
-    # which is what silently stopped releases being produced at all.
+    # macos-15, not macos-14: the older image ships Swift 5.10, whose type
+    # checker gives up on SwiftUI expressions that a current compiler handles
+    # without noticing. Two builds failed that way on code which types locally
+    # in well under a tenth of the warning threshold, so the toolchain gap —
+    # not the code — was the real problem.
+    #
+    # Single runner. The Intel runners GitHub used to offer are retired, and a
+    # matrix entry for one sits queued indefinitely rather than failing, which
+    # is what silently stopped releases being produced at all.
     #
     # Coverage for x86_64 is not lost: the cross-compile below is the same one
     # the release build ships, so a break in it is caught here.
-    runs-on: macos-14
+    runs-on: macos-15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 

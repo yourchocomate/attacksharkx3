@@ -258,57 +258,87 @@ struct MainView: View {
     }
 
     private var batterySection: some View {
-            Section("Battery", expanded: true) {
-                VStack(alignment: .leading, spacing: 8) {
-                    BatteryGauge(
-                        level: state.battery,
-                        available: state.batteryAvailable,
-                        current: state.batterySeen,
-                        asleep: state.batteryAsleep)
-
-                    if state.batteryHistory.count > 1 {
-                        VStack(alignment: .leading, spacing: 1) {
-                            ForEach(Array(state.batteryHistory.enumerated()), id: \.offset) {
-                                _, entry in
-                                Text("\(entry.at, style: .time)  \(entry.level)%  \(entry.raw)")
-                                    .font(.system(size: 9, design: .monospaced))
-                                    .foregroundStyle(.tertiary)
-                                    .lineLimit(1)
-                            }
-                        }
-                    }
-
-                    if let at = state.batteryAt {
-                        Text("reported \(at, style: .relative) ago")
-                            .font(.system(size: 10))
-                            .foregroundStyle(.secondary)
-                    }
-
-                    Text(state.link == .bluetooth
-                        ? "Read once from GATT 2A19 as the link came up, the way "
-                          + "macOS does it. Reading that characteristic increments "
-                          + "it, so the first read after the mouse powers up is the "
-                          + "only true one — asctl takes exactly one and then leaves "
-                          + "it alone."
-                        : "Pushed by the mouse as status event 0x4010, which the "
-                          + "vendor expects every six seconds and answers with a "
-                          + "sleep label when it lapses. It carries ten steps, which "
-                          + "is why the gauge has ten bars.")
+        Section("Battery", expanded: true) {
+            VStack(alignment: .leading, spacing: 8) {
+                BatteryGauge(
+                    level: state.battery,
+                    available: state.batteryAvailable,
+                    current: state.batterySeen,
+                    asleep: state.batteryAsleep)
+                batteryHistoryRows
+                batteryTimestamp
+                Text(batteryExplanation)
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
+                batteryOverflowWarning
+            }
+        }
+    }
 
-                    if let level = state.battery, level > 100 {
-                        Text(
-                            "Above 100, so 2A19 had already been read since the "
-                            + "mouse last powered up — by another tool, or by an "
-                            + "earlier run. Power-cycle the mouse for a clean value."
-                        )
-                        .font(.system(size: 10))
-                        .foregroundStyle(.orange)
-                    }
+    @ViewBuilder
+    private var batteryHistoryRows: some View {
+        if state.batteryHistory.count > 1 {
+            VStack(alignment: .leading, spacing: 1) {
+                ForEach(Array(state.batteryHistory.enumerated()), id: \.offset) { _, entry in
+                    Text(Self.batteryHistoryLine(entry))
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
                 }
             }
+        }
+    }
 
+    /// Built as a plain String rather than interpolated into a Text.
+    ///
+    /// Interpolating a Date, an Int and a String into a LocalizedStringKey costs
+    /// the type checker far more than formatting them here does, and this row is
+    /// inside a ForEach inside a Section — the nesting is what turns an
+    /// affordable expression into one the compiler gives up on.
+    private static func batteryHistoryLine(_ entry: (level: Int, raw: String, at: Date)) -> String {
+        let time = batteryTimeFormatter.string(from: entry.at)
+        return "\(time)  \(entry.level)%  \(entry.raw)"
+    }
+
+    private static let batteryTimeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.timeStyle = .medium
+        formatter.dateStyle = .none
+        return formatter
+    }()
+
+    @ViewBuilder
+    private var batteryTimestamp: some View {
+        if let at = state.batteryAt {
+            Text("reported \(at, style: .relative) ago")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    /// Annotated as String so the compiler is not left inferring a type across
+    /// a branch of two long concatenations.
+    private var batteryExplanation: String {
+        if state.link == .bluetooth {
+            return "Read once from GATT 2A19 as the link came up, the way macOS "
+                + "does it. Reading that characteristic increments it, so the "
+                + "first read after the mouse powers up is the only true one — "
+                + "asctl takes exactly one and then leaves it alone."
+        }
+        return "Pushed by the mouse as status event 0x4010, which the vendor "
+            + "expects every six seconds and answers with a sleep label when it "
+            + "lapses. It carries ten steps, which is why the gauge has ten bars."
+    }
+
+    @ViewBuilder
+    private var batteryOverflowWarning: some View {
+        if let level = state.battery, level > 100 {
+            Text("Above 100, so 2A19 had already been read since the mouse last "
+                + "powered up — by another tool, or by an earlier run. "
+                + "Power-cycle the mouse for a clean value.")
+                .font(.system(size: 10))
+                .foregroundStyle(.orange)
+        }
     }
 
     private var profilesSection: some View {

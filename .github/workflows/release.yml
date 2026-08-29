@@ -33,7 +33,16 @@ jobs:
     # one pass but drives xcbuild, so it needs a full Xcode. `--triple` does not:
     # it cross-compiles with the command line tools alone, which means this is
     # reproducible on any Mac and was verified locally before being committed.
-    runs-on: macos-14
+    #
+    # macos-15 rather than macos-14, which ships Swift 5.10 — a type checker
+    # that gives up on SwiftUI expressions a current compiler handles without
+    # comment. That cost two failed builds on code typing locally in under a
+    # tenth of the warning threshold.
+    runs-on: macos-15
+    # A job that never starts is worse than one that fails: the retired Intel
+    # runner sat queued for eighteen hours and the release simply never
+    # appeared. This bounds the damage of a bad label or a wedged step.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 

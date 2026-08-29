@@ -399,13 +399,24 @@ enum ScrollController {
             FileManager.default.fileExists(atPath: url.path)
         }
 
-        /// The bundle's launcher, so the login item starts the app rather than
-        /// a bare binary — a bundle keeps its Accessibility and Bluetooth
+        /// The bundle's own executable, so the login item starts the app rather
+        /// than a bare binary — a bundle keeps its Accessibility and Bluetooth
         /// grants across rebuilds, and a loose executable does not.
+        ///
+        /// Ask Bundle for the path rather than assembling one. This used to
+        /// hard-code `Contents/MacOS/launch`, a wrapper script that was removed
+        /// when the bundle was given its own identity — CFBundleExecutable has
+        /// to match the running process name or macOS never reads Info.plist.
+        /// Nothing noticed, because writing the plist succeeds whether or not
+        /// the program it names exists: launchd only discovers the path is dead
+        /// at login, and then fails silently. Which is exactly the report —
+        /// logged out, logged back in, no asctl.
         static var launcher: String? {
-            let bundle = Bundle.main.bundleURL
-            guard bundle.pathExtension == "app" else { return nil }
-            return bundle.appendingPathComponent("Contents/MacOS/launch").path
+            guard Bundle.main.bundleURL.pathExtension == "app",
+                  let executable = Bundle.main.executableURL,
+                  FileManager.default.isExecutableFile(atPath: executable.path)
+            else { return nil }
+            return executable.path
         }
 
         static func install() throws {
@@ -434,10 +445,44 @@ enum ScrollController {
                 at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             try lines.joined(separator: "\n").write(
                 to: url, atomically: true, encoding: .utf8)
+
+            // Register it now rather than trusting the next login.
+            //
+            // launchd does read this directory at login, so the plist alone
+            // would eventually work — but only eventually, which means a broken
+            // entry stays invisible until the user logs out and finds the app
+            // missing. Bootstrapping makes launchd parse it immediately, so a
+            // bad path or a malformed plist is a failure we can report.
+            bootout()
+            _ = launchctl(["bootstrap", "gui/\(getuid())", url.path])
         }
 
         static func uninstall() throws {
+            bootout()
             if installed { try FileManager.default.removeItem(at: url) }
+        }
+
+        /// Whether launchd has actually accepted the job, as opposed to a plist
+        /// merely existing on disk. These are different things, and only this
+        /// one predicts what happens at the next login.
+        static var registered: Bool {
+            launchctl(["print", "gui/\(getuid())/\(label)"]) == 0
+        }
+
+        private static func bootout() {
+            _ = launchctl(["bootout", "gui/\(getuid())/\(label)"])
+        }
+
+        @discardableResult
+        private static func launchctl(_ arguments: [String]) -> Int32 {
+            let task = Process()
+            task.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+            task.arguments = arguments
+            task.standardOutput = FileHandle.nullDevice
+            task.standardError = FileHandle.nullDevice
+            guard (try? task.run()) != nil else { return -1 }
+            task.waitUntilExit()
+            return task.terminationStatus
         }
     }
 

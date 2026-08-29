@@ -213,6 +213,16 @@ enum SelfTest {
         expect("the heartbeat window is the vendor's six seconds",
                AppState.batteryHeartbeat, 6.0)
 
+        // Scroll direction — persisted by raw value, so the strings are load
+        // bearing. Renaming a case would silently discard a saved choice.
+        print("\nScroll direction — persistence")
+        for mode in ScrollDirection.allCases {
+            expect("\(mode.rawValue) round-trips",
+                   ScrollDirection(rawValue: mode.rawValue) == mode, true)
+        }
+        expect("an unknown value does not decode",
+               ScrollDirection(rawValue: "sideways") == nil, true)
+
         print("\n\(checks - failures)/\(checks) checks passed")
         if failures > 0 {
             print("\(failures) FAILED")

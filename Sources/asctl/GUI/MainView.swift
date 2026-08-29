@@ -34,6 +34,7 @@ struct MainView: View {
             state.restoreLastApplied()
             state.startMonitor()
             state.startDeviceWatch()
+            state.restoreScrollMode()
         }
         .onChange(of: state.link) { _ in state.restartMonitor() }
         .onReceive(NotificationCenter.default.publisher(for: .asctlShowSettings)) { _ in

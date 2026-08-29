@@ -24,6 +24,16 @@ struct SettingsView: View {
                     .toggleStyle(.switch)
                     .disabled(!state.canLaunchAtLogin)
 
+                    if state.launchAtLogin && !state.launchAtLoginRegistered {
+                        Text("launchd has not accepted the login item, so asctl "
+                            + "will not open at login. Toggle this off and on "
+                            + "again; if it persists the app bundle may have "
+                            + "moved since it was registered.")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
                     if state.canLaunchAtLogin {
                         note("One switch for the whole app. asctl opens at login and "
                             + "stays in the menu bar, so everything it does keeps "

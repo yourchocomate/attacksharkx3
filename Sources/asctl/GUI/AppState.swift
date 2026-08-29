@@ -588,7 +588,44 @@ final class AppState: ObservableObject {
     /// device-side scroll setting — nothing in the vendor UI or any config
     /// report touches it. So the wheel is corrected on the host by intercepting
     /// discrete scroll events, leaving the trackpad's continuous ones alone.
-    @Published var scrollMode: ScrollDirection = .follow
+    @Published var scrollMode: ScrollDirection = .follow {
+        didSet { if scrollMode != oldValue { saveScrollMode() } }
+    }
+
+    private static var scrollModeURL: URL {
+        Profile.directory.deletingLastPathComponent()
+            .appendingPathComponent("scroll-mode.json")
+    }
+
+    /// Remember the wheel direction across launches.
+    ///
+    /// It was not saved at all, so every launch came up on `follow` and the
+    /// choice had to be made again — and because closing the window leaves the
+    /// app running in the menu bar, that was easy to miss until the next
+    /// restart. Stored beside the profiles rather than in UserDefaults so it
+    /// sits with everything else the uninstaller offers to keep.
+    private func saveScrollMode() {
+        let payload = ["mode": scrollMode.rawValue]
+        guard let data = try? JSONEncoder().encode(payload) else { return }
+        try? FileManager.default.createDirectory(
+            at: AppState.scrollModeURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true)
+        try? data.write(to: AppState.scrollModeURL)
+    }
+
+    /// Restore the saved direction and start intercepting if one was set.
+    ///
+    /// Called at launch. `follow` needs no tap, so it starts nothing.
+    func restoreScrollMode() {
+        guard let data = try? Data(contentsOf: AppState.scrollModeURL),
+              let payload = try? JSONDecoder().decode([String: String].self, from: data),
+              let raw = payload["mode"],
+              let saved = ScrollDirection(rawValue: raw)
+        else { return }
+        guard saved != .follow else { return }
+        scrollMode = saved
+        applyScrollMode()
+    }
     @Published var scrollRunning = false
     @Published var scrollAgentInstalled = ScrollController.agentInstalled
 
@@ -764,11 +801,21 @@ final class AppState: ObservableObject {
                 note("will no longer open at login")
             }
             launchAtLogin = ScrollController.AppLogin.installed
+            // Report what launchd made of it, not just that a file was written.
+            // A plist naming a program that does not exist installs perfectly
+            // and then does nothing at login, which is how this went unnoticed.
+            if on && !ScrollController.AppLogin.registered {
+                note("login item: launchd did not accept the job — it will not "
+                    + "open at login")
+            }
         } catch {
             note("login item: \(error.localizedDescription)")
             launchAtLogin = ScrollController.AppLogin.installed
         }
     }
+
+    /// Whether launchd holds the job, as opposed to a plist merely existing.
+    var launchAtLoginRegistered: Bool { ScrollController.AppLogin.registered }
 
     // MARK: Profiles
 

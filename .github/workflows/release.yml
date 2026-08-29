@@ -10,68 +10,65 @@ on:
 permissions:
   contents: write
 
+# Share this group with CI so a commit is not built twice.
+#
+# Pushing a commit starts CI, and pushing the tag that points at it starts this
+# workflow — two runs doing nearly identical work on identical source. Keying
+# the group on the commit means the tag push cancels the CI run still in flight.
+concurrency:
+  group: build-${{ github.sha }}
+  cancel-in-progress: true
+
 jobs:
-  # Each architecture is built natively rather than cross-compiled.
-  #
-  # `swift build --arch arm64 --arch x86_64` produces a universal binary in one
-  # pass, but it drives xcbuild and so needs a full Xcode install — it fails
-  # outright with only the command line tools. Building on two runners and
-  # joining them with lipo works everywhere and is verifiable locally.
-  build:
-    strategy:
-      matrix:
-        include:
-          - runner: macos-14
-            arch: arm64
-          - runner: macos-13
-            arch: x86_64
-    runs-on: ${{ matrix.runner }}
+  release:
+    # One arm64 runner builds both slices.
+    #
+    # This used to be a two-runner matrix, arm64 on macos-14 and x86_64 natively
+    # on macos-13. GitHub has retired the Intel runners, so the x86_64 job never
+    # got a machine — it sat queued for eighteen hours while arm64 finished in
+    # three minutes, and because `release` needed both, no release was ever
+    # produced. That is why tags only ever showed GitHub's own source archives.
+    #
+    # `swift build --arch arm64 --arch x86_64` would build a universal binary in
+    # one pass but drives xcbuild, so it needs a full Xcode. `--triple` does not:
+    # it cross-compiles with the command line tools alone, which means this is
+    # reproducible on any Mac and was verified locally before being committed.
+    runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
 
       - name: Show toolchain
         run: swift --version
 
-      - name: Build
-        run: swift build -c release
-
-      - name: Verify the payloads without hardware
-        run: .build/release/asctl selftest
-
-      - name: Confirm the architecture
+      - name: Build both architectures
         run: |
-          file .build/release/asctl
-          lipo -archs .build/release/asctl | grep -q '${{ matrix.arch }}'
+          swift build -c release
+          swift build -c release --triple x86_64-apple-macosx
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: asctl-${{ matrix.arch }}
-          path: .build/release/asctl
-          retention-days: 1
-
-  release:
-    needs: build
-    runs-on: macos-14
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-
-      - name: Join the two builds into one universal binary
+      - name: Join them into one universal binary
         run: |
           mkdir -p dist
           lipo -create \
-            artifacts/asctl-arm64/asctl \
-            artifacts/asctl-x86_64/asctl \
+            .build/arm64-apple-macosx/release/asctl \
+            .build/x86_64-apple-macosx/release/asctl \
             -output dist/asctl
           chmod +x dist/asctl
           lipo -archs dist/asctl
-          # The Info.plist is linked into __TEXT,__info_plist, so a binary that
-          # lost it would abort under CoreBluetooth with no message at all.
-          otool -s __TEXT __info_plist dist/asctl | grep -q "__info_plist"
-          ./dist/asctl selftest
+
+      - name: Check the binary is what it claims to be
+        run: |
+          # Both slices present, or the "universal" download is a lie.
+          for arch in arm64 x86_64; do
+            lipo -archs dist/asctl | grep -q "$arch" \
+              || { echo "missing $arch slice"; exit 1; }
+          done
+          # The Info.plist is linked into __TEXT,__info_plist. A binary that
+          # lost it aborts under CoreBluetooth with no message at all.
+          otool -s __TEXT __info_plist dist/asctl | grep -q "__info_plist" \
+            || { echo "Info.plist is not linked into the binary"; exit 1; }
+
+      - name: Verify the payloads without hardware
+        run: ./dist/asctl selftest
 
       - name: Build the app bundle and disk image
         env:
@@ -92,12 +89,23 @@ jobs:
           shasum -a 256 *.dmg *.tar.gz > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
+      - name: Confirm the release assets exist and are not empty
+        run: |
+          # The previous workflow could "succeed" while attaching nothing,
+          # because the publish step only ran on tags and nothing checked that
+          # the files it referenced had been produced.
+          for f in dist/*.dmg dist/asctl-cli-universal.tar.gz dist/SHA256SUMS.txt; do
+            [ -s "$f" ] || { echo "missing or empty: $f"; exit 1; }
+            echo "ok  $(du -h "$f" | cut -f1)  $f"
+          done
+
       - name: Publish
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           draft: true
           generate_release_notes: true
+          fail_on_unmatched_files: true
           files: |
             dist/*.dmg
             dist/asctl-cli-universal.tar.gz
@@ -144,6 +152,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: asctl-release-preview
+          if-no-files-found: error
           path: |
             dist/*.dmg
             dist/asctl-cli-universal.tar.gz

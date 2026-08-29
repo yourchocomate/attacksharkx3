@@ -5,14 +5,26 @@ on:
     branches: [main]
   pull_request:
 
+# Shared with the release workflow, keyed on the commit rather than the branch.
+#
+# Pushing a commit and then the tag that points at it used to start two runs
+# building identical source. The tag push now cancels this one.
+concurrency:
+  group: build-${{ github.sha }}
+  cancel-in-progress: true
+
 jobs:
   build:
-    strategy:
-      matrix:
-        runner: [macos-14, macos-13]
-    runs-on: ${{ matrix.runner }}
+    # Single arm64 runner. The Intel runners GitHub used to offer are retired,
+    # and a matrix entry for one sits queued indefinitely rather than failing —
+    # which is what silently stopped releases being produced at all.
+    #
+    # Coverage for x86_64 is not lost: the cross-compile below is the same one
+    # the release build ships, so a break in it is caught here.
+    runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
+
       - run: swift build -c release
 
       # No hardware on a runner, so this is the only check that can catch a
@@ -21,5 +33,21 @@ jobs:
       - name: Verify generated payloads
         run: .build/release/asctl selftest
 
+      - name: Cross-compile the Intel slice
+        run: swift build -c release --triple x86_64-apple-macosx
+
       - name: Build the app bundle
         run: ./Scripts/make-app.sh build
+
+      - name: Check the bundle is launchable
+        run: |
+          # CFBundleExecutable has to name a file that exists, or macOS never
+          # reads Info.plist and the app has no identity — which cost a round of
+          # TCC crashes and a login item that silently did nothing.
+          EXE=$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" \
+            build/asctl.app/Contents/Info.plist)
+          test -x "build/asctl.app/Contents/MacOS/$EXE" \
+            || { echo "CFBundleExecutable names $EXE, which is not there"; exit 1; }
+          /usr/libexec/PlistBuddy -c "Print :NSBluetoothAlwaysUsageDescription" \
+            build/asctl.app/Contents/Info.plist >/dev/null \
+            || { echo "the Bluetooth usage description is missing"; exit 1; }

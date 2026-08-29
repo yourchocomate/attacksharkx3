@@ -192,11 +192,42 @@ final class GUIAppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+/// Hand over to a copy that is already running, if there is one.
+///
+/// Turning on "open at login" bootstraps a launchd job, and the job carries
+/// RunAtLoad because that is what starts it at login — so launchd spawns a
+/// second asctl the instant the switch is flipped. That appeared as a window
+/// opening by itself, which is how this was found.
+///
+/// The spawn is unavoidable: RunAtLoad is required for the feature to work at
+/// all. What is avoidable is two copies existing, and two would be worse than
+/// the stray window — they would fight over one event tap, one HID device and
+/// one menu bar item, each unaware of the other.
+///
+/// Activating rather than exiting silently also fixes the ordinary case: with
+/// asctl already resident in the menu bar, opening it from Finder now brings
+/// the running copy forward instead of doing nothing visible.
+@available(macOS 12.0, *)
+private func handOverToRunningInstance() -> Bool {
+    guard let identifier = Bundle.main.bundleIdentifier else { return false }
+    let mine = ProcessInfo.processInfo.processIdentifier
+    let existing = NSRunningApplication
+        .runningApplications(withBundleIdentifier: identifier)
+        .first { $0.processIdentifier != mine && !$0.isTerminated }
+    guard let existing else { return false }
+    existing.activate(options: [.activateAllWindows])
+    return true
+}
+
 func runGUI() -> Never {
     guard #available(macOS 12.0, *) else {
         FileHandle.standardError.write(Data("asctl gui requires macOS 12 or later.\n".utf8))
         exit(1)
     }
+    // Before anything is built, so a duplicate launch costs nothing and leaves
+    // no window, menu bar item or event tap behind.
+    if handOverToRunningInstance() { exit(0) }
+
     let app = NSApplication.shared
     app.setActivationPolicy(.regular)
     let delegate = GUIAppDelegate()

@@ -159,211 +159,23 @@ struct MainView: View {
 
     // MARK: Left — buttons, macros, profile, power
 
+    // One property per section, rather than one long builder.
+    //
+    // Not a style preference: a single ScrollView holding five inline sections
+    // exceeded the compiler's type-checking budget on the CI toolchain and
+    // failed the build outright, while compiling fine locally. SwiftUI's
+    // generic nesting makes the cost superlinear in the size of one expression,
+    // so the fix is to keep each expression small. Nothing here is measurable
+    // locally — the local toolchain types the old form in well under the
+    // warning threshold — which is exactly why it kept reaching CI.
     private var leftColumn: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 8) {
-                Section("Button Setting", expanded: true, dirty: state.buttonsDirty,
-                        onDiscard: { state.discardButtons() }) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        ForEach(AppState.physicalButtons, id: \.self) { index in
-                            buttonRow(index)
-                        }
-
-                        Text(
-                            "The report carries 18 entries; these seven are the ones "
-                            + "shown to drive a button on this shell. The rest are still "
-                            + "transmitted, unchanged."
-                        )
-                        .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
-                        .padding(.top, 2)
-
-                        HStack {
-                            Button("Restore factory") { state.restoreFactoryButtons() }
-                            Spacer()
-                            Button("Apply") { state.applyButtons() }
-                                .disabled(state.busy || !state.isReady)
-                        }
-                        .padding(.top, 4)
-
-                        if !state.buttonsHaveLeftClick {
-                            Text("At least one entry must stay a left click.")
-                                .font(.system(size: 10))
-                                .foregroundStyle(.red)
-                        }
-                    }
-                }
-
-                Section("Battery", expanded: true) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        BatteryGauge(
-                            level: state.battery,
-                            available: state.batteryAvailable,
-                            current: state.batterySeen,
-                            asleep: state.batteryAsleep)
-
-                        if state.batteryHistory.count > 1 {
-                            VStack(alignment: .leading, spacing: 1) {
-                                ForEach(Array(state.batteryHistory.enumerated()), id: \.offset) {
-                                    _, entry in
-                                    Text("\(entry.at, style: .time)  \(entry.level)%  \(entry.raw)")
-                                        .font(.system(size: 9, design: .monospaced))
-                                        .foregroundStyle(.tertiary)
-                                        .lineLimit(1)
-                                }
-                            }
-                        }
-
-                        if let at = state.batteryAt {
-                            Text("reported \(at, style: .relative) ago")
-                                .font(.system(size: 10))
-                                .foregroundStyle(.secondary)
-                        }
-
-                        Text(state.link == .bluetooth
-                            ? "Read once from GATT 2A19 as the link came up, the way "
-                              + "macOS does it. Reading that characteristic increments "
-                              + "it, so the first read after the mouse powers up is the "
-                              + "only true one — asctl takes exactly one and then leaves "
-                              + "it alone."
-                            : "Pushed by the mouse as status event 0x4010, which the "
-                              + "vendor expects every six seconds and answers with a "
-                              + "sleep label when it lapses. It carries ten steps, which "
-                              + "is why the gauge has ten bars.")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
-
-                        if let level = state.battery, level > 100 {
-                            Text(
-                                "Above 100, so 2A19 had already been read since the "
-                                + "mouse last powered up — by another tool, or by an "
-                                + "earlier run. Power-cycle the mouse for a clean value."
-                            )
-                            .font(.system(size: 10))
-                            .foregroundStyle(.orange)
-                        }
-                    }
-                }
-
-                Section("Profiles", subtitle: "\(state.profileNames.count)", expanded: true) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        if state.profileNames.isEmpty {
-                            Text("No saved profiles yet.")
-                                .font(.system(size: 10))
-                                .foregroundStyle(.secondary)
-                        }
-                        ForEach(state.profileNames, id: \.self) { name in
-                            HStack(spacing: 6) {
-                                Text(name).font(.system(size: 11))
-                                Spacer()
-                                Button("Load") { state.loadProfile(named: name) }
-                                    .controlSize(.small)
-                                    .help("Load into the editor without writing")
-                                Button("Apply") {
-                                    state.loadProfile(named: name)
-                                    state.applyEverything()
-                                }
-                                .controlSize(.small)
-                                .disabled(state.busy || !state.isReady)
-                                Button {
-                                    state.deleteProfile(named: name)
-                                } label: {
-                                    Image(systemName: "trash")
-                                }
-                                .controlSize(.small)
-                                .buttonStyle(.borderless)
-                            }
-                        }
-
-                        Divider().padding(.vertical, 2)
-
-                        HStack(spacing: 6) {
-                            TextField("New profile name", text: $state.newProfileName)
-                                .textFieldStyle(.roundedBorder)
-                                .font(.system(size: 11))
-                                .onSubmit { state.saveProfile(named: state.newProfileName) }
-                            Button("Save") { state.saveProfile(named: state.newProfileName) }
-                                .controlSize(.small)
-                                .disabled(state.newProfileName
-                                    .trimmingCharacters(in: .whitespaces).isEmpty)
-                        }
-
-                        Text(
-                            "Profiles are files on this Mac, replayed through the normal "
-                            + "reports — the device's own slots are unused by this product. "
-                            + "Because the protocol is write-only, a saved profile is the "
-                            + "only record of a configuration that exists anywhere."
-                        )
-                        .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
-                    }
-                }
-
-                Section("Scrolling",
-                        subtitle: state.scrollRunning ? "active" : nil) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack(spacing: 6) {
-                            Circle()
-                                .fill(state.macOSNaturalScrolling ? Color.orange : Color.secondary)
-                                .frame(width: 6, height: 6)
-                            Text("macOS natural scrolling is "
-                                + (state.macOSNaturalScrolling ? "ON" : "off"))
-                                .font(.system(size: 11))
-                            Spacer()
-                        }
-
-                        Picker("", selection: $state.scrollMode) {
-                            ForEach(ScrollDirection.allCases) { mode in
-                                Text(mode.short).tag(mode)
-                            }
-                        }
-                        .pickerStyle(.segmented)
-                        .labelsHidden()
-                        .onChange(of: state.scrollMode) { _ in state.applyScrollMode() }
-
-                        Text(state.scrollMode.label)
-                            .font(.system(size: 10))
-                            .foregroundStyle(.secondary)
-
-                        if state.scrollRunning {
-                            HStack(spacing: 5) {
-                                Circle().fill(Color.green).frame(width: 6, height: 6)
-                                Text("intercepting the wheel — trackpad untouched")
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(.secondary)
-                                Spacer()
-                            }
-                        }
-
-                        Text(
-                            "Applies while asctl is running. Turn on \"Open at login\" "
-                            + "in settings to have it always active."
-                        )
-                        .font(.system(size: 10))
-                        .foregroundStyle(.tertiary)
-                    }
-                }
-
-                Section("Bluetooth") {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(
-                            "The mouse sometimes reconnects with working buttons and a "
-                            + "dead cursor. That is a firmware fault — no configuration "
-                            + "write clears it, only a link teardown."
-                        )
-                        .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
-                        Button("Cycle Bluetooth") {
-                            state.note("── cycling the Bluetooth controller")
-                            DispatchQueue.global().async {
-                                let ok = BluetoothPower.cycle()
-                                DispatchQueue.main.async {
-                                    state.note(ok ? "ok — Bluetooth cycled" : "error: could not cycle Bluetooth")
-                                }
-                            }
-                        }
-                    }
-                }
+                buttonSection
+                batterySection
+                profilesSection
+                scrollingSection
+                bluetoothSection
             }
             .padding(10)
         }
@@ -409,6 +221,223 @@ struct MainView: View {
 
     // MARK: Centre — the mouse
 
+
+    private var buttonSection: some View {
+            Section("Button Setting", expanded: true, dirty: state.buttonsDirty,
+                    onDiscard: { state.discardButtons() }) {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(AppState.physicalButtons, id: \.self) { index in
+                        buttonRow(index)
+                    }
+
+                    Text(
+                        "The report carries 18 entries; these seven are the ones "
+                        + "shown to drive a button on this shell. The rest are still "
+                        + "transmitted, unchanged."
+                    )
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 2)
+
+                    HStack {
+                        Button("Restore factory") { state.restoreFactoryButtons() }
+                        Spacer()
+                        Button("Apply") { state.applyButtons() }
+                            .disabled(state.busy || !state.isReady)
+                    }
+                    .padding(.top, 4)
+
+                    if !state.buttonsHaveLeftClick {
+                        Text("At least one entry must stay a left click.")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.red)
+                    }
+                }
+            }
+
+    }
+
+    private var batterySection: some View {
+            Section("Battery", expanded: true) {
+                VStack(alignment: .leading, spacing: 8) {
+                    BatteryGauge(
+                        level: state.battery,
+                        available: state.batteryAvailable,
+                        current: state.batterySeen,
+                        asleep: state.batteryAsleep)
+
+                    if state.batteryHistory.count > 1 {
+                        VStack(alignment: .leading, spacing: 1) {
+                            ForEach(Array(state.batteryHistory.enumerated()), id: \.offset) {
+                                _, entry in
+                                Text("\(entry.at, style: .time)  \(entry.level)%  \(entry.raw)")
+                                    .font(.system(size: 9, design: .monospaced))
+                                    .foregroundStyle(.tertiary)
+                                    .lineLimit(1)
+                            }
+                        }
+                    }
+
+                    if let at = state.batteryAt {
+                        Text("reported \(at, style: .relative) ago")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Text(state.link == .bluetooth
+                        ? "Read once from GATT 2A19 as the link came up, the way "
+                          + "macOS does it. Reading that characteristic increments "
+                          + "it, so the first read after the mouse powers up is the "
+                          + "only true one — asctl takes exactly one and then leaves "
+                          + "it alone."
+                        : "Pushed by the mouse as status event 0x4010, which the "
+                          + "vendor expects every six seconds and answers with a "
+                          + "sleep label when it lapses. It carries ten steps, which "
+                          + "is why the gauge has ten bars.")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+
+                    if let level = state.battery, level > 100 {
+                        Text(
+                            "Above 100, so 2A19 had already been read since the "
+                            + "mouse last powered up — by another tool, or by an "
+                            + "earlier run. Power-cycle the mouse for a clean value."
+                        )
+                        .font(.system(size: 10))
+                        .foregroundStyle(.orange)
+                    }
+                }
+            }
+
+    }
+
+    private var profilesSection: some View {
+            Section("Profiles", subtitle: "\(state.profileNames.count)", expanded: true) {
+                VStack(alignment: .leading, spacing: 6) {
+                    if state.profileNames.isEmpty {
+                        Text("No saved profiles yet.")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                    }
+                    ForEach(state.profileNames, id: \.self) { name in
+                        HStack(spacing: 6) {
+                            Text(name).font(.system(size: 11))
+                            Spacer()
+                            Button("Load") { state.loadProfile(named: name) }
+                                .controlSize(.small)
+                                .help("Load into the editor without writing")
+                            Button("Apply") {
+                                state.loadProfile(named: name)
+                                state.applyEverything()
+                            }
+                            .controlSize(.small)
+                            .disabled(state.busy || !state.isReady)
+                            Button {
+                                state.deleteProfile(named: name)
+                            } label: {
+                                Image(systemName: "trash")
+                            }
+                            .controlSize(.small)
+                            .buttonStyle(.borderless)
+                        }
+                    }
+
+                    Divider().padding(.vertical, 2)
+
+                    HStack(spacing: 6) {
+                        TextField("New profile name", text: $state.newProfileName)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(size: 11))
+                            .onSubmit { state.saveProfile(named: state.newProfileName) }
+                        Button("Save") { state.saveProfile(named: state.newProfileName) }
+                            .controlSize(.small)
+                            .disabled(state.newProfileName
+                                .trimmingCharacters(in: .whitespaces).isEmpty)
+                    }
+
+                    Text(
+                        "Profiles are files on this Mac, replayed through the normal "
+                        + "reports — the device's own slots are unused by this product. "
+                        + "Because the protocol is write-only, a saved profile is the "
+                        + "only record of a configuration that exists anywhere."
+                    )
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                }
+            }
+
+    }
+
+    private var scrollingSection: some View {
+            Section("Scrolling",
+                    subtitle: state.scrollRunning ? "active" : nil) {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 6) {
+                        Circle()
+                            .fill(state.macOSNaturalScrolling ? Color.orange : Color.secondary)
+                            .frame(width: 6, height: 6)
+                        Text("macOS natural scrolling is "
+                            + (state.macOSNaturalScrolling ? "ON" : "off"))
+                            .font(.system(size: 11))
+                        Spacer()
+                    }
+
+                    Picker("", selection: $state.scrollMode) {
+                        ForEach(ScrollDirection.allCases) { mode in
+                            Text(mode.short).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .onChange(of: state.scrollMode) { _ in state.applyScrollMode() }
+
+                    Text(state.scrollMode.label)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+
+                    if state.scrollRunning {
+                        HStack(spacing: 5) {
+                            Circle().fill(Color.green).frame(width: 6, height: 6)
+                            Text("intercepting the wheel — trackpad untouched")
+                                .font(.system(size: 10))
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                        }
+                    }
+
+                    Text(
+                        "Applies while asctl is running. Turn on \"Open at login\" "
+                        + "in settings to have it always active."
+                    )
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+                }
+            }
+
+    }
+
+    private var bluetoothSection: some View {
+            Section("Bluetooth") {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(
+                        "The mouse sometimes reconnects with working buttons and a "
+                        + "dead cursor. That is a firmware fault — no configuration "
+                        + "write clears it, only a link teardown."
+                    )
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    Button("Cycle Bluetooth") {
+                        state.note("── cycling the Bluetooth controller")
+                        DispatchQueue.global().async {
+                            let ok = BluetoothPower.cycle()
+                            DispatchQueue.main.async {
+                                state.note(ok ? "ok — Bluetooth cycled" : "error: could not cycle Bluetooth")
+                            }
+                        }
+                    }
+                }
+            }
+    }
     private var centreColumn: some View {
         ScrollView {
             VStack(spacing: 10) {
@@ -437,153 +466,11 @@ struct MainView: View {
     private var rightColumn: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 8) {
-                Section("DPI Setting", subtitle: "\(state.stages.filter { $0.enabled }.count) stages",
-                        expanded: true, dirty: state.dpiDirty,
-                        onDiscard: { state.discardDPI() }) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        ForEach(state.stages.indices, id: \.self) { index in
-                            DPIStageRow(
-                                index: index,
-                                stage: $state.stages[index],
-                                activeStage: $state.activeStage,
-                                advanced: state.showAdvancedDPI,
-                                confirmed: state.deviceActiveStage == index)
-                        }
-
-                        HStack(spacing: 5) {
-                            if let reported = state.deviceActiveStage {
-                                Circle().fill(Color.green).frame(width: 6, height: 6)
-                                Text("Mouse reports stage \(reported + 1) active")
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(.secondary)
-                            } else {
-                                Circle()
-                                    .strokeBorder(Color.orange, lineWidth: 1)
-                                    .frame(width: 6, height: 6)
-                                Text(
-                                    "Active stage unconfirmed — press the DPI button "
-                                    + "on the mouse to sync"
-                                )
-                                .font(.system(size: 10))
-                                .foregroundStyle(.orange)
-                            }
-                            Spacer()
-                        }
-
-                        if !state.activeStageIsEnabled {
-                            Text("The active stage is switched off — pick one that is on.")
-                                .font(.system(size: 10))
-                                .foregroundStyle(.orange)
-                        }
-
-                        HStack(spacing: 8) {
-                            Toggle("Advanced", isOn: $state.showAdvancedDPI)
-                                .toggleStyle(.switch)
-                                .font(.system(size: 11))
-                                .help("Show a slider per stage. Values snap to 50 either way.")
-                            Spacer()
-                            Menu("Presets") {
-                                Button("Vendor factory table — 6 stages") {
-                                    state.loadVendorFactoryStages()
-                                }
-                                Button("This unit's stock — 5 stages") {
-                                    state.loadStockStages()
-                                }
-                            }
-                            .frame(width: 92)
-                            Button("Apply") { state.applyDPI() }
-                                .disabled(state.busy || !state.isReady)
-                        }
-
-                        Text(
-                            "Report 0x04 is atomic: DPI, the four sensor toggles below "
-                            + "and every stage colour go together, and none can be read "
-                            + "back first. The eight slots are addressed by index — "
-                            + "switching one off does not renumber the rest."
-                        )
-                        .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
-                    }
-                }
-
-                Section("Polling Rate", subtitle: "\(state.pollingRate) Hz", expanded: true,
-                        dirty: state.pollingDirty,
-                        onDiscard: { state.discardPolling() }) {
-                    VStack(alignment: .leading, spacing: 10) {
-                        PollingRateDial(selection: $state.pollingRate)
-                        HStack {
-                            Text("The wire carries a divider against 1000 Hz.")
-                                .font(.system(size: 10))
-                                .foregroundStyle(.secondary)
-                            Spacer()
-                            Button("Apply") { state.applyPolling() }
-                                .disabled(state.busy || !state.isReady)
-                        }
-                    }
-                }
-
-                Section("Sensor", dirty: state.sensorDirty,
-                        onDiscard: { state.discardSensor() }) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        ToggleRow(
-                            title: "Lift-off distance", offLabel: "1 mm", onLabel: "2 mm",
-                            value: $state.liftOff2mm)
-                        ToggleRow(
-                            title: "Ripple control", offLabel: "Off", onLabel: "On",
-                            value: $state.rippleControl)
-                        ToggleRow(
-                            title: "Angle snap", offLabel: "Off", onLabel: "On",
-                            value: $state.angleSnap)
-                        ToggleRow(
-                            title: "Motion sync", offLabel: "Off", onLabel: "On",
-                            value: $state.motionSync,
-                            note: "Ripple control and motion sync are only observable at "
-                                + "high DPI. Testing them at 800 DPI produces a false negative.")
-                        HStack {
-                            Spacer()
-                            Button("Apply") { state.applyDPI() }
-                                .disabled(state.busy || !state.isReady)
-                        }
-                    }
-                }
-
-                Section("Power Setting", dirty: state.powerDirty,
-                        onDiscard: { state.discardPower() }) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        SliderRow(title: "Sleep time", range: 1...60, unit: "min",
-                                  value: $state.sleepMinutes)
-                        SliderRow(title: "Deep sleep time", range: 1...60, unit: "min",
-                                  value: $state.deepSleepMinutes)
-                        SliderRow(
-                            title: "Key response time", range: 2...25, unit: "",
-                            value: $state.debounceMs,
-                            detail: { "= \(LightReport.effectiveDebounceMs($0)) ms" })
-                        HStack {
-                            Spacer()
-                            Button("Apply") { state.applyPower() }
-                                .disabled(state.busy || !state.isReady)
-                        }
-                        Text(
-                            "Key response time counts 2 ms units — measured on "
-                            + "hardware, so the effective debounce is twice the "
-                            + "number. The sleep timers are accepted by the device "
-                            + "but their behaviour has not been measured."
-                        )
-                            .font(.system(size: 10))
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                Section("Light Setting", subtitle: "unavailable") {
-                    Text(
-                        "The X3 has no user-controllable lighting. The light beside the "
-                        + "wheel is a battery indicator: off on battery, magenta while "
-                        + "charging, green at full. The vendor's own light panel is "
-                        + "hidden on this model too."
-                    )
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
-                }
+                dpiSection
+                pollingSection
+                sensorSection
+                powerSection
+                lightSection
             }
             .padding(10)
         }
@@ -591,6 +478,168 @@ struct MainView: View {
 
     // MARK: Footer
 
+
+    private var dpiSection: some View {
+            Section("DPI Setting", subtitle: "\(state.stages.filter { $0.enabled }.count) stages",
+                    expanded: true, dirty: state.dpiDirty,
+                    onDiscard: { state.discardDPI() }) {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(state.stages.indices, id: \.self) { index in
+                        DPIStageRow(
+                            index: index,
+                            stage: $state.stages[index],
+                            activeStage: $state.activeStage,
+                            advanced: state.showAdvancedDPI,
+                            confirmed: state.deviceActiveStage == index)
+                    }
+
+                    HStack(spacing: 5) {
+                        if let reported = state.deviceActiveStage {
+                            Circle().fill(Color.green).frame(width: 6, height: 6)
+                            Text("Mouse reports stage \(reported + 1) active")
+                                .font(.system(size: 10))
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Circle()
+                                .strokeBorder(Color.orange, lineWidth: 1)
+                                .frame(width: 6, height: 6)
+                            Text(
+                                "Active stage unconfirmed — press the DPI button "
+                                + "on the mouse to sync"
+                            )
+                            .font(.system(size: 10))
+                            .foregroundStyle(.orange)
+                        }
+                        Spacer()
+                    }
+
+                    if !state.activeStageIsEnabled {
+                        Text("The active stage is switched off — pick one that is on.")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.orange)
+                    }
+
+                    HStack(spacing: 8) {
+                        Toggle("Advanced", isOn: $state.showAdvancedDPI)
+                            .toggleStyle(.switch)
+                            .font(.system(size: 11))
+                            .help("Show a slider per stage. Values snap to 50 either way.")
+                        Spacer()
+                        Menu("Presets") {
+                            Button("Vendor factory table — 6 stages") {
+                                state.loadVendorFactoryStages()
+                            }
+                            Button("This unit's stock — 5 stages") {
+                                state.loadStockStages()
+                            }
+                        }
+                        .frame(width: 92)
+                        Button("Apply") { state.applyDPI() }
+                            .disabled(state.busy || !state.isReady)
+                    }
+
+                    Text(
+                        "Report 0x04 is atomic: DPI, the four sensor toggles below "
+                        + "and every stage colour go together, and none can be read "
+                        + "back first. The eight slots are addressed by index — "
+                        + "switching one off does not renumber the rest."
+                    )
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                }
+            }
+
+    }
+
+    private var pollingSection: some View {
+            Section("Polling Rate", subtitle: "\(state.pollingRate) Hz", expanded: true,
+                    dirty: state.pollingDirty,
+                    onDiscard: { state.discardPolling() }) {
+                VStack(alignment: .leading, spacing: 10) {
+                    PollingRateDial(selection: $state.pollingRate)
+                    HStack {
+                        Text("The wire carries a divider against 1000 Hz.")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Apply") { state.applyPolling() }
+                            .disabled(state.busy || !state.isReady)
+                    }
+                }
+            }
+
+    }
+
+    private var sensorSection: some View {
+            Section("Sensor", dirty: state.sensorDirty,
+                    onDiscard: { state.discardSensor() }) {
+                VStack(alignment: .leading, spacing: 6) {
+                    ToggleRow(
+                        title: "Lift-off distance", offLabel: "1 mm", onLabel: "2 mm",
+                        value: $state.liftOff2mm)
+                    ToggleRow(
+                        title: "Ripple control", offLabel: "Off", onLabel: "On",
+                        value: $state.rippleControl)
+                    ToggleRow(
+                        title: "Angle snap", offLabel: "Off", onLabel: "On",
+                        value: $state.angleSnap)
+                    ToggleRow(
+                        title: "Motion sync", offLabel: "Off", onLabel: "On",
+                        value: $state.motionSync,
+                        note: "Ripple control and motion sync are only observable at "
+                            + "high DPI. Testing them at 800 DPI produces a false negative.")
+                    HStack {
+                        Spacer()
+                        Button("Apply") { state.applyDPI() }
+                            .disabled(state.busy || !state.isReady)
+                    }
+                }
+            }
+
+    }
+
+    private var powerSection: some View {
+            Section("Power Setting", dirty: state.powerDirty,
+                    onDiscard: { state.discardPower() }) {
+                VStack(alignment: .leading, spacing: 6) {
+                    SliderRow(title: "Sleep time", range: 1...60, unit: "min",
+                              value: $state.sleepMinutes)
+                    SliderRow(title: "Deep sleep time", range: 1...60, unit: "min",
+                              value: $state.deepSleepMinutes)
+                    SliderRow(
+                        title: "Key response time", range: 2...25, unit: "",
+                        value: $state.debounceMs,
+                        detail: { "= \(LightReport.effectiveDebounceMs($0)) ms" })
+                    HStack {
+                        Spacer()
+                        Button("Apply") { state.applyPower() }
+                            .disabled(state.busy || !state.isReady)
+                    }
+                    Text(
+                        "Key response time counts 2 ms units — measured on "
+                        + "hardware, so the effective debounce is twice the "
+                        + "number. The sleep timers are accepted by the device "
+                        + "but their behaviour has not been measured."
+                    )
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+    }
+
+    private var lightSection: some View {
+            Section("Light Setting", subtitle: "unavailable") {
+                Text(
+                    "The X3 has no user-controllable lighting. The light beside the "
+                    + "wheel is a battery indicator: off on battery, magenta while "
+                    + "charging, green at full. The vendor's own light panel is "
+                    + "hidden on this model too."
+                )
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+            }
+    }
     private var footer: some View {
         VStack(spacing: 0) {
             HStack {

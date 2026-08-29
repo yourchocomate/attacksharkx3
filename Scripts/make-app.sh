@@ -77,3 +77,21 @@ echo
 echo "On first launch, grant these in System Settings ▸ Privacy & Security:"
 echo "  • Input Monitoring  — for the 2.4 GHz receiver and USB cable"
 echo "  • Bluetooth         — for the --ble transport and battery"
+
+# Optional: install it, leaving exactly one asctl on the machine.
+#
+# The staging bundle carries the same identifier as the installed one, so while
+# both exist LaunchServices knows two apps by that identity and Finder and
+# Launchpad each offer two asctl entries — one of them a build artefact that
+# must never be launched, because it is replaced on every build and holds its
+# own TCC grants. Unregistering it does not stick: macOS rescans and re-adds a
+# newly created bundle within seconds. Removing it does.
+if [ "${INSTALL:-}" = "1" ]; then
+    DEST="/Applications/$(basename "$APP")"
+    rm -rf "$DEST"
+    cp -R "$APP" "$DEST"
+    codesign --force --deep --sign - "$DEST" >/dev/null 2>&1 || true
+    rm -rf "$APP"
+    echo
+    echo "installed to $DEST, staging copy removed"
+fi

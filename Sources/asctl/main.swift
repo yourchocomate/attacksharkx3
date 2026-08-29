@@ -109,6 +109,7 @@ COMMANDS
   ble battery              Read the battery level over Bluetooth (GATT 2A19)
   ble listen [seconds]     Listen on the FEE4 notify characteristic
   battery-probe [seconds]  Listen for the battery level the device volunteers
+  macos-battery            Find out whether macOS reads 2A19 for its figure
   blediag [seconds]        Dump GATT, five battery reads, and every notify
                            packet while you press buttons. Use this rather
                            than guessing at a battery or event problem.
@@ -1635,6 +1636,7 @@ case "power-test":
         print("       asctl power-test wake <minutes>")
     }
 case "blediag": commandBLEDiag(options)
+case "macos-battery": exit(MacOSBatterySource.run())
 case "battery-probe":
   exit(BatteryProbe.run(seconds: TimeInterval(options.positionals.first.flatMap(Int.init) ?? 120)))
 case "light": commandLight(options)

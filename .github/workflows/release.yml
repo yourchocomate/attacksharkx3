@@ -49,6 +49,22 @@ jobs:
       - name: Show toolchain
         run: swift --version
 
+      # Take the version from the tag, so one thing decides it.
+      #
+      # The disk image is named from CFBundleShortVersionString, which is edited
+      # by hand and drifts: v0.2.0 shipped asctl-0.1.0.dmg because the plist had
+      # never been bumped. Patching before the build matters — the plist is
+      # linked into the binary with -sectcreate, so a later edit would fix the
+      # file name and leave the binary still claiming the old version.
+      - name: Stamp the version from the tag
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          /usr/libexec/PlistBuddy \
+            -c "Set :CFBundleShortVersionString $VERSION" Sources/asctl/Info.plist
+          /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" \
+            Sources/asctl/Info.plist
+
       - name: Build both architectures
         run: |
           swift build -c release

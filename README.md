@@ -1,5 +1,7 @@
 # asctl — Attack Shark X3 for macOS
 
+<img width="1490" height="1075" alt="ASCTL" src="https://github.com/user-attachments/assets/b10b623d-4fb9-4eea-b15b-37b6fab86dec" />
+
 A native macOS configuration tool for the Attack Shark X3 mouse. Sets DPI stages,
 polling rate, button mappings, macros, sensor options and power timers over the
 2.4 GHz receiver, the USB cable, or Bluetooth.

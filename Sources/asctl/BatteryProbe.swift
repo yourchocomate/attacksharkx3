@@ -96,12 +96,7 @@ enum BatteryProbe {
             print("   \(ble.lastError ?? "no peripheral found")")
             return false
         }
-        guard let target = ble.foundPeripherals.map({ $0.0 }).first(where: GUITransport.isX3) else {
-            let seen = ble.foundPeripherals.map { $0.0.name ?? "(unnamed)" }
-            print("   the mouse was not among: \(seen.joined(separator: ", "))")
-            return false
-        }
-        guard ble.connect(target), ble.subscribe() else {
+        guard ble.connectToAnyX3(), ble.subscribe() else {
             print("   \(ble.lastError ?? "could not open the GATT link")")
             return false
         }
@@ -223,10 +218,7 @@ enum MacOSBatterySource {
     private static func readCounter() -> Int? {
         let ble = BLEConnection()
         defer { ble.disconnect() }
-        guard ble.discover(),
-              let target = ble.foundPeripherals.map({ $0.0 }).first(where: GUITransport.isX3),
-              ble.connect(target)
-        else {
+        guard ble.discover(), ble.connectToAnyX3() else {
             print(ble.lastError ?? "could not reach the mouse over Bluetooth")
             return nil
         }

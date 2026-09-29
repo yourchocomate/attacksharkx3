@@ -201,6 +201,43 @@ final class BLEConnection: NSObject {
     }
 
     /// Connect and walk the GATT table looking for FEE3 / FEE4.
+    /// Connect to whichever X3 identity actually answers.
+    ///
+    /// The mouse carries two Bluetooth identities, X3-5.2 and X3-5.4, and the
+    /// mode button cycles between them (§17: wire 0x3C). macOS can keep both
+    /// registered as connected after a switch — observed with all three of
+    /// X3-5.4, X3-5.2 and X3-5.2 listed at once — so
+    /// retrieveConnectedPeripherals hands back more than one and only the
+    /// current identity will answer.
+    ///
+    /// Taking the first match therefore failed whenever the stale identity
+    /// sorted first: a full ten second connect timeout against something that
+    /// was never going to respond, reported as "could not reach the mouse"
+    /// while the mouse sat there working. Try each in turn instead, and give
+    /// the earlier candidates a short budget so exhausting them is quick.
+    func connectToAnyX3(timeout: TimeInterval = 10) -> Bool {
+        let candidates = foundPeripherals.map { $0.0 }.filter(GUITransport.isX3)
+        guard !candidates.isEmpty else {
+            let seen = foundPeripherals.map { $0.0.name ?? "(unnamed)" }
+            lastError = seen.isEmpty
+                ? "no peripherals found"
+                : "the mouse was not among: \(seen.joined(separator: ", "))"
+            return false
+        }
+        var tried: [String] = []
+        for (index, candidate) in candidates.enumerated() {
+            let last = index == candidates.count - 1
+            if connect(candidate, timeout: last ? timeout : min(timeout, 4)) { return true }
+            tried.append(candidate.name ?? "(unnamed)")
+            // Drop the half-open attempt before moving on, or the next connect
+            // competes with one macOS still believes is in progress.
+            central.cancelPeripheralConnection(candidate)
+            peripheral = nil
+        }
+        lastError = "none of these answered: \(tried.joined(separator: ", "))"
+        return false
+    }
+
     func connect(_ target: CBPeripheral, timeout: TimeInterval = 10) -> Bool {
         peripheral = target
         target.delegate = self

@@ -798,15 +798,11 @@ func commandBLEDiag(_ options: Options) {
     for (peripheral, _) in ble.foundPeripherals {
         print("  seen: \(peripheral.name ?? "(unnamed)")  \(peripheral.identifier)")
     }
-    guard let target = ble.foundPeripherals.map({ $0.0 }).first(where: GUITransport.isX3) else {
-        print("error: none of those is the mouse")
-        return
-    }
-    print("\nconnecting to \(target.name ?? "?")…")
-    guard ble.connect(target) else {
+    guard ble.connectToAnyX3() else {
         print("error: \(ble.lastError ?? "connect failed")")
         return
     }
+    print("\nconnected to \(ble.connectedName ?? "?")")
     print("GATT table:")
     for line in ble.describeServices() { print("  \(line)") }
 
@@ -851,11 +847,7 @@ func commandBLEDiag(_ options: Options) {
     for attempt in 1...3 {
         let fresh = BLEConnection()
         defer { fresh.disconnect() }
-        guard fresh.discover(),
-              let peripheral = fresh.foundPeripherals.map({ $0.0 })
-                .first(where: GUITransport.isX3),
-              fresh.connect(peripheral)
-        else {
+        guard fresh.discover(), fresh.connectToAnyX3() else {
             print("  \(attempt)/3  could not connect")
             continue
         }

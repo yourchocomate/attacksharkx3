@@ -153,15 +153,7 @@ final class StatusMonitor {
             setConnected(false)
             return
         }
-        guard let target = ble.foundPeripherals.map({ $0.0 }).first(where: GUITransport.isX3)
-        else {
-            DispatchQueue.main.async {
-                self.onBatteryFailed?("the mouse was not among the peripherals found")
-            }
-            setConnected(false)
-            return
-        }
-        guard ble.connect(target), ble.subscribe() else {
+        guard ble.connectToAnyX3(), ble.subscribe() else {
             DispatchQueue.main.async {
                 self.onBatteryFailed?(ble.lastError ?? "could not open the GATT link")
             }

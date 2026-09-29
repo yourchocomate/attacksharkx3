@@ -196,6 +196,15 @@ struct MainView: View {
                 get: { state.buttonActions[index] },
                 set: { state.buttonActions[index] = $0 }
             )) {
+                // A recorded combination has no entry in the fixed list, and a
+                // Picker whose selection matches no tag renders empty. Carry
+                // the current value as its own option so it stays visible.
+                if ShortcutRecorder.isCustom(state.buttonActions[index]) {
+                    SwiftUI.Section("Custom") {
+                        Text(ShortcutRecorder.describe(state.buttonActions[index]))
+                            .tag(state.buttonActions[index])
+                    }
+                }
                 ForEach(AppState.actionGroups, id: \.0) { group in
                     SwiftUI.Section(group.0) {
                         ForEach(group.1, id: \.key) { choice in
@@ -206,6 +215,11 @@ struct MainView: View {
             }
             .labelsHidden()
             .font(.system(size: 11))
+
+            ShortcutCaptureButton(action: Binding(
+                get: { state.buttonActions[index] },
+                set: { state.buttonActions[index] = $0 }
+            ))
         }
         .padding(.vertical, 1)
         .padding(.horizontal, 4)

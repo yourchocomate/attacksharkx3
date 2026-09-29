@@ -1018,6 +1018,10 @@ enum ButtonReport {
     /// the vendor's shortcut table.
     static let modifiers: [String: UInt8] = [
         "ctrl": 0x01, "shift": 0x02, "alt": 0x04, "win": 0x08, "gui": 0x08,
+        // macOS names for the same two bits, because "win" and "alt" are the
+        // wrong words on this platform and the bitmask is standard HID either
+        // way: GUI is Command, Alt is Option.
+        "cmd": 0x08, "command": 0x08, "opt": 0x04, "option": 0x04,
     ]
 
     /// A single button's three wire bytes.
@@ -1062,7 +1066,7 @@ enum ButtonReport {
         "browser_stop": (0x22, 0, 0), "my_computer": (0x23, 0, 0),
         "browser_refresh": (0x24, 0, 0), "browser_home": (0x25, 0, 0),
         "browser_search": (0x26, 0, 0),
-        "browser_favorites": (0x11, 0x03, 0x12),
+        "browser_favorites": (0x11, 0x0A, 0x12),  // Shift+Cmd+O
         "profile_cycle": (0x34, 0, 0), "profile_up": (0x35, 0, 0),
         "profile_down": (0x36, 0, 0),
         // The mode button's factory action: cycles the Bluetooth identity
@@ -1071,21 +1075,36 @@ enum ButtonReport {
         // switching only applies over Bluetooth.
         "mode_switch": (0x3C, 0, 0),
         // Predefined shortcuts, ids 32-50 -- all keyboard combos.
-        "cut": (0x11, 0x01, 0x1B), "copy": (0x11, 0x01, 0x06),
-        "paste": (0x11, 0x01, 0x19), "open": (0x11, 0x01, 0x12),
-        "save": (0x11, 0x01, 0x16), "find": (0x11, 0x01, 0x09),
-        "redo": (0x11, 0x01, 0x1C), "undo": (0x11, 0x01, 0x1D),
-        "select_all": (0x11, 0x01, 0x04), "print": (0x11, 0x01, 0x13),
-        "close_window": (0x11, 0x04, 0x3D), "swap_windows": (0x11, 0x04, 0x2B),
-        "show_desktop": (0x11, 0x08, 0x07), "run_command": (0x11, 0x08, 0x15),
-        "lock_pc": (0x11, 0x08, 0x0F), "screen_capture": (0x11, 0x0A, 0x16),
-        // Ids 47-49 carry real keyboard combos but the vendor UI never shows
-        // them -- their switch cases all fall through to an empty label. They
-        // work like any other combo, so they are exposed here under sensible
-        // names rather than left inaccessible.
-        "new": (0x11, 0x01, 0x11),        // Ctrl+N
-        "zoom_in": (0x11, 0x01, 0x2E),    // Ctrl+=
-        "zoom_out": (0x11, 0x01, 0x2D),   // Ctrl+-
+        //
+        // The vendor emits these with modifier 0x01, Left Ctrl, because the
+        // software is for Windows. The mouse sends a standard HID keyboard
+        // report and the host decides what it means, so on macOS Ctrl+C is not
+        // copy: it is SIGINT in a terminal and nothing in most apps. Ctrl+Z is
+        // worse, suspending the foreground process. Ctrl+A moves to the start
+        // of a line.
+        //
+        // These are therefore sent with GUI (0x08), which is Command, and the
+        // two Windows-only shortcuts are replaced by their macOS equivalents.
+        // Anyone who wants the Windows form can still ask for it explicitly
+        // with `key:ctrl+c`.
+        "cut": (0x11, 0x08, 0x1B),          // Cmd+X
+        "copy": (0x11, 0x08, 0x06),         // Cmd+C
+        "paste": (0x11, 0x08, 0x19),        // Cmd+V
+        "open": (0x11, 0x08, 0x12),         // Cmd+O
+        "save": (0x11, 0x08, 0x16),         // Cmd+S
+        "find": (0x11, 0x08, 0x09),         // Cmd+F
+        "undo": (0x11, 0x08, 0x1D),         // Cmd+Z
+        "redo": (0x11, 0x0A, 0x1D),         // Shift+Cmd+Z
+        "select_all": (0x11, 0x08, 0x04),   // Cmd+A
+        "print": (0x11, 0x08, 0x13),        // Cmd+P
+        "new": (0x11, 0x08, 0x11),          // Cmd+N
+        "zoom_in": (0x11, 0x08, 0x2E),      // Cmd+=
+        "zoom_out": (0x11, 0x08, 0x2D),     // Cmd+-
+        "close_window": (0x11, 0x08, 0x1A), // Cmd+W, not Alt+F4
+        "swap_windows": (0x11, 0x08, 0x2B), // Cmd+Tab, not Alt+Tab
+        "screen_capture": (0x11, 0x0A, 0x21), // Shift+Cmd+4, not Shift+Win+S
+        "lock_pc": (0x11, 0x09, 0x14),      // Ctrl+Cmd+Q, not Win+L
+        "lock": (0x11, 0x09, 0x14),
     ]
 
     /// The factory default mapping, recovered from the table

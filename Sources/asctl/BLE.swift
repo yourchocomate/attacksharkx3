@@ -115,13 +115,39 @@ final class BLEConnection: NSObject {
         central = CBCentralManager(delegate: self, queue: nil)
     }
 
-    /// Pump the run loop until `condition` holds or the timeout expires.
+    /// Wait until `condition` holds or the timeout expires, without spinning.
+    ///
+    /// `RunLoop.run(mode:before:)` only sleeps if the mode has an input source
+    /// or a timer in it. With an empty mode it returns **immediately** and
+    /// reports false, so a loop that ignores the result calls it again at once
+    /// and burns a core until the deadline.
+    ///
+    /// That is not hypothetical here. The manager is created with `queue: nil`,
+    /// which asks CoreBluetooth to deliver on the main queue, so when the GUI
+    /// pumps this from its listener thread that thread's run loop has no
+    /// CoreBluetooth sources on it at all — `RunLoop.current` lazily makes an
+    /// empty one. Measured on a running build: 97% of a core, 185 minutes of
+    /// CPU in three hours, the whole of it under `_CFRunLoopFinished`, which is
+    /// the path CFRunLoop takes when it finds the mode empty. It was enough to
+    /// make the scroll wheel lag, because the wheel goes through this same
+    /// process's event tap.
+    ///
+    /// So: run the loop when there is something to run, and sleep when there is
+    /// not. Both callers stay correct — the CLI waits on the main thread, where
+    /// the CoreBluetooth sources genuinely are, and blocks properly there.
     @discardableResult
     private func wait(_ seconds: TimeInterval, until condition: () -> Bool) -> Bool {
         let deadline = Date().addingTimeInterval(seconds)
+        let slice: TimeInterval = 0.05
         while Date() < deadline {
             if condition() { return true }
-            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
+            let remaining = min(slice, deadline.timeIntervalSinceNow)
+            guard remaining > 0 else { break }
+            if !RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: remaining)) {
+                // Nothing scheduled in this mode, so run() did not wait. Do the
+                // waiting ourselves rather than going straight round again.
+                Thread.sleep(forTimeInterval: remaining)
+            }
         }
         return condition()
     }

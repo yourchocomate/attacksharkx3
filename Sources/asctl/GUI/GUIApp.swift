@@ -40,6 +40,8 @@ final class GUIAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Before anything else, and regardless of whether a window follows.
+        state.startUp()
         installStatusItem()
         guard !startedInBackground else {
             // No window and no activation. The menu bar item is the whole UI

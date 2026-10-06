@@ -28,15 +28,9 @@ struct MainView: View {
             }
         }
         .frame(minWidth: 1180, minHeight: 780)
-        .onAppear {
-            state.refreshDevices()
-            state.refreshProfiles()
-            state.restoreLastApplied()
-            state.startMonitor()
-            state.startDeviceWatch()
-            state.restoreScrollMode()
-            state.refreshLaunchAtLogin()
-        }
+        // Idempotent: the delegate already did this at launch, so that a
+        // background start without a window still comes up fully.
+        .onAppear { state.startUp() }
         .onChange(of: state.link) { _ in state.restartMonitor() }
         .onReceive(NotificationCenter.default.publisher(for: .asctlShowSettings)) { _ in
             showingSettings = true

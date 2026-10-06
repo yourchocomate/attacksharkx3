@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.1.4
+
+A small release: one correction to what the app tells you, with no change to
+what it does.
+
+### Changed
+
+- **No longer warns that updating costs you your permissions.** It does not.
+  Releases since v0.1.2 share a signing certificate, so the identity macOS
+  records stays the same between versions and Input Monitoring, Bluetooth and
+  Accessibility carry across — now confirmed on an update between two released
+  versions rather than only predicted. The warning after each update, the
+  release notes and the troubleshooting entry all said otherwise, which meant
+  being told to expect something that does not happen.
+
+  Still true, and still stated: a copy you build yourself is signed ad-hoc and
+  identified by its contents, so moving between your own build and a release
+  asks for them once.
+
 ## v0.1.3
 
 ### Added

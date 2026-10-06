@@ -987,40 +987,6 @@ final class AppState: ObservableObject {
                     //
                     // It used to say they would need granting again, which was
                     // true while releases were ad-hoc signed: the requirement
-                    // macOS records was a hash of one build. Releases are now
-                    // signed with a certificate, so the requirement names the
-                    // certificate and is identical across versions. Confirmed
-                    // on an actual update from v0.1.2 to v0.1.3 — the grants
-                    // carried over untouched.
-                case .failure(let error):
-                    self.updateState = .failed(error.localizedDescription)
-                    self.note("update check: \(error.localizedDescription)")
-                }
-            }
-        }
-    }
-
-    /// Download and install the release found by the last check.
-    ///
-    /// Deliberately a second, explicit step. Checking is harmless; replacing the
-    /// app the user is running is not, and doing both on one click would leave
-    /// no moment to decline.
-    func installUpdate() {
-        guard case .available = updateState, let release = pendingUpdate else { return }
-        updateState = .installing("starting")
-        Updater.install(release) { [weak self] step, _ in
-            DispatchQueue.main.async { self?.updateState = .installing(step) }
-        } completion: { [weak self] result in
-            DispatchQueue.main.async {
-                guard let self else { return }
-                switch result {
-                case .success:
-                    self.updateState = .installed(version: release.version)
-                    self.note("installed \(release.version) — restarting")
-                    // No permissions warning here any more.
-                    //
-                    // It used to say they would need granting again, which was
-                    // true while releases were ad-hoc signed: the requirement
                     // macOS records was then a hash of one specific build
                     // (measured: `cdhash H"c55eff…"`), so every version looked
                     // like a different app. Releases are signed with a

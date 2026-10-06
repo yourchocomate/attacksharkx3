@@ -983,18 +983,50 @@ final class AppState: ObservableObject {
                 case .success:
                     self.updateState = .installed(version: release.version)
                     self.note("installed \(release.version) — restarting")
-                    // Warn before it looks like a fault.
+                    // No permissions warning here any more.
                     //
-                    // These builds are ad-hoc signed, so the code signature
-                    // has no team identifier and the designated requirement
-                    // macOS records is a literal hash of that exact build
-                    // (measured: `cdhash H"c55eff…"`). A new build hashes
-                    // differently, so TCC no longer matches it and the grants
-                    // do not carry over. Nothing is wrong — but silently
-                    // losing Bluetooth after an update would look like one.
-                    self.note("permissions will need granting again — an "
-                        + "ad-hoc signed build is identified by its hash, "
-                        + "which every release changes")
+                    // It used to say they would need granting again, which was
+                    // true while releases were ad-hoc signed: the requirement
+                    // macOS records was a hash of one build. Releases are now
+                    // signed with a certificate, so the requirement names the
+                    // certificate and is identical across versions. Confirmed
+                    // on an actual update from v0.1.2 to v0.1.3 — the grants
+                    // carried over untouched.
+                case .failure(let error):
+                    self.updateState = .failed(error.localizedDescription)
+                    self.note("update check: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    /// Download and install the release found by the last check.
+    ///
+    /// Deliberately a second, explicit step. Checking is harmless; replacing the
+    /// app the user is running is not, and doing both on one click would leave
+    /// no moment to decline.
+    func installUpdate() {
+        guard case .available = updateState, let release = pendingUpdate else { return }
+        updateState = .installing("starting")
+        Updater.install(release) { [weak self] step, _ in
+            DispatchQueue.main.async { self?.updateState = .installing(step) }
+        } completion: { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                switch result {
+                case .success:
+                    self.updateState = .installed(version: release.version)
+                    self.note("installed \(release.version) — restarting")
+                    // No permissions warning here any more.
+                    //
+                    // It used to say they would need granting again, which was
+                    // true while releases were ad-hoc signed: the requirement
+                    // macOS records was then a hash of one specific build
+                    // (measured: `cdhash H"c55eff…"`), so every version looked
+                    // like a different app. Releases are signed with a
+                    // certificate now, the requirement names the certificate
+                    // instead, and an update from v0.1.2 to v0.1.3 carried the
+                    // grants over untouched.
                     if let bundle = Updater.installedBundle() {
                         Updater.relaunch(bundle)
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {

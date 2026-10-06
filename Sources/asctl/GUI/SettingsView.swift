@@ -191,10 +191,12 @@ struct SettingsView: View {
                 "The menu bar is full — on a notched display the overflow hides "
                 + "behind the notch. Cmd-drag any icon to reorder, and move asctl to "
                 + "the left of the notch. Its position is remembered.")
-            labelled("Permissions lost after updating",
-                "Expected. These builds are signed with a certificate that is not "
-                + "issued by Apple, and macOS re-checks identity on each update. "
-                + "Grant them once more.")
+            labelled("Permissions lost after installing a build",
+                "Released builds keep them: they share a signing certificate, so "
+                + "macOS sees the same app across versions. A copy you built "
+                + "yourself is signed ad-hoc and is identified by its contents "
+                + "instead, so moving between your own build and a release costs "
+                + "the grants once.")
             labelled("Cursor dead after a Bluetooth reconnect",
                 "A firmware fault. No configuration write clears it; use the "
                 + "Bluetooth recovery button on the device page.")

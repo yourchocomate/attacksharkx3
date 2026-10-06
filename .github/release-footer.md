@@ -31,11 +31,14 @@ trust the binary — see the workflow.
 The app can update itself — the menu bar item has a check, and it
 verifies the download against `SHA256SUMS.txt` before installing.
 
-One wrinkle, and it is unavoidable without a paid Developer ID:
-because these builds are ad-hoc signed, macOS identifies the app by
-a hash of that exact build, so **the permissions below have to be
-granted again after every update**. Nothing is broken when that
-happens.
+Permissions carry across updates. Releases share a signing certificate,
+so the identity macOS records stays the same from one version to the
+next — confirmed on a real update between released versions, not just
+expected.
+
+A copy you built yourself is signed ad-hoc and identified by its
+contents instead, so moving between your own build and a release will
+ask for them once.
 
 ### Permissions
 

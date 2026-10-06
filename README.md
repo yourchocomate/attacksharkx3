@@ -204,10 +204,11 @@ granted, and what that requirement contains depends on how the build was signed:
 
 Release builds are signed with a self-signed certificate, which is enough to
 make the requirement stable — it is identical for every build the certificate
-signs, so TCC continues to recognise the application. A build produced without
-the certificate falls back to ad-hoc signing and will re-prompt; the application
-says so when it finishes updating, so the resulting loss of Bluetooth access is
-not mistaken for a fault.
+signs, so TCC continues to recognise the application. Confirmed on an update
+between two released versions, not only predicted from the requirement strings.
+
+A build produced without the certificate falls back to ad-hoc signing, so
+moving between a copy you built yourself and a release costs the grants once.
 
 This does not affect Gatekeeper. A self-signed certificate is trusted by
 nothing, so the first launch still requires the step described under

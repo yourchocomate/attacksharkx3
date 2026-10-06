@@ -95,11 +95,13 @@ struct SettingsView: View {
             }
 
             if state.canLaunchAtLogin {
-                note("One switch for everything the app does. asctl opens at login "
-                    + "and stays in the menu bar, so the device listener, the "
-                    + "DPI-stage and battery readings and the wheel-direction fix "
-                    + "all keep working. Closing the window does not stop it — quit "
-                    + "from the menu bar item for that.")
+                note("Starts in the menu bar with no window and no Dock icon, so "
+                    + "logging in does not interrupt what you are doing. Everything "
+                    + "still runs: the device listener, the DPI-stage and battery "
+                    + "readings and the wheel-direction fix.")
+                note("Open it from the menu bar when you need the window. Closing "
+                    + "the window puts it back in the menu bar rather than quitting "
+                    + "— quit from the menu bar item for that.")
             } else {
                 note("Only the app bundle can be launched at login. Build it with "
                     + "Scripts/make-app.sh and run that rather than the bare binary.")

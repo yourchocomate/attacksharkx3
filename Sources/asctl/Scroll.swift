@@ -395,8 +395,26 @@ enum ScrollController {
                 .appendingPathComponent("Library/LaunchAgents/\(label).plist")
         }
 
+        static let backgroundFlag = "--background"
+
         static var installed: Bool {
             FileManager.default.fileExists(atPath: url.path)
+        }
+
+        /// Whether the installed plist predates the background flag, or names a
+        /// program that is no longer where it was.
+        ///
+        /// Rewriting on launch rather than waiting for the switch to be
+        /// toggled: someone who turned this on months ago should not have to
+        /// know that the behaviour changed in order to get it.
+        static var needsUpgrade: Bool {
+            guard let data = try? Data(contentsOf: url),
+                  let plist = try? PropertyListSerialization.propertyList(
+                      from: data, format: nil) as? [String: Any],
+                  let arguments = plist["ProgramArguments"] as? [String],
+                  let program = arguments.first
+            else { return true }
+            return !arguments.contains(backgroundFlag) || program != (launcher ?? program)
         }
 
         /// The bundle's own executable, so the login item starts the app rather
@@ -435,7 +453,11 @@ enum ScrollController {
                 "<dict>",
                 "    <key>Label</key><string>\(label)</string>",
                 "    <key>ProgramArguments</key>",
-                "    <array><string>\(program)</string></array>",
+                // --background: start in the menu bar with no window and no
+                // Dock icon. Opening at login should not put a mouse
+                // configuration window in front of whatever the user is doing.
+                "    <array><string>\(program)</string>"
+                    + "<string>\(backgroundFlag)</string></array>",
                 "    <key>RunAtLoad</key><true/>",
                 "    <key>KeepAlive</key><false/>",
                 "</dict>",

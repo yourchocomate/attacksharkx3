@@ -19,7 +19,7 @@ extension Notification.Name {
 /// and keeps the GUI and the CLI in one binary, with no duplicated protocol
 /// code and nothing to keep in sync.
 @available(macOS 12.0, *)
-final class GUIAppDelegate: NSObject, NSApplicationDelegate {
+final class GUIAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var window: NSWindow?
     /// One state object for the whole app. The menu bar popover shows the same
     /// live values as the window, which is only true if they share this.
@@ -27,10 +27,47 @@ final class GUIAppDelegate: NSObject, NSApplicationDelegate {
     private var popover: NSPopover?
     private var titleTimer: Timer?
 
+    /// Whether this process was started by the login item.
+    ///
+    /// Kept so closing the window can put the app back where it came from. A
+    /// launch someone performed deliberately keeps its Dock icon on close, as
+    /// it always has; one that happened at login returns to the menu bar.
+    private let startedInBackground: Bool
+
+    init(background: Bool) {
+        self.startedInBackground = background
+        super.init()
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
-        makeWindow()
         installStatusItem()
+        guard !startedInBackground else {
+            // No window and no activation. The menu bar item is the whole UI
+            // until the user asks for more.
+            state.note("started in the background — open from the menu bar")
+            upgradeLoginItemIfNeeded()
+            return
+        }
+        makeWindow()
         NSApp.activate(ignoringOtherApps: true)
+        upgradeLoginItemIfNeeded()
+    }
+
+    /// Rewrite a login item written before --background existed.
+    ///
+    /// Without this, anyone who already had "open at login" switched on would
+    /// keep getting the window at every startup until they thought to toggle
+    /// it off and on again.
+    private func upgradeLoginItemIfNeeded() {
+        DispatchQueue.global(qos: .utility).async {
+            guard ScrollController.AppLogin.installed,
+                  ScrollController.AppLogin.needsUpgrade
+            else { return }
+            try? ScrollController.AppLogin.install()
+            DispatchQueue.main.async {
+                self.state.note("updated the login item to start in the background")
+            }
+        }
     }
 
     /// Build the main window.
@@ -51,6 +88,7 @@ final class GUIAppDelegate: NSObject, NSApplicationDelegate {
             defer: false)
         window.isReleasedWhenClosed = false
         window.title = "asctl — Attack Shark X3"
+        window.delegate = self
         window.contentView = NSHostingView(rootView: MainView(state: state))
         window.center()
         window.setFrameAutosaveName("asctl.main")
@@ -69,6 +107,16 @@ final class GUIAppDelegate: NSObject, NSApplicationDelegate {
         false
     }
 
+    /// Give the Dock icon back when the window goes, if that is where we began.
+    func windowWillClose(_ notification: Notification) {
+        guard startedInBackground else { return }
+        // After the close completes, or the policy change races the teardown
+        // and the window is left behind as an empty frame.
+        DispatchQueue.main.async {
+            NSApp.setActivationPolicy(.accessory)
+        }
+    }
+
     func applicationShouldHandleReopen(
         _ sender: NSApplication, hasVisibleWindows flag: Bool
     ) -> Bool {
@@ -77,6 +125,11 @@ final class GUIAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func showWindow() {
+        // A menu bar launch has no Dock icon; give it one as soon as there is a
+        // window to go with it, or the window cannot be reached from Cmd-Tab.
+        if NSApp.activationPolicy() != .regular {
+            NSApp.setActivationPolicy(.regular)
+        }
         // Rebuild rather than assume one survives. Belt and braces alongside
         // isReleasedWhenClosed: a nil window here should reopen the app, not
         // silently do nothing.
@@ -225,7 +278,7 @@ private func handOverToRunningInstance() -> Bool {
     return true
 }
 
-func runGUI() -> Never {
+func runGUI(background: Bool = false) -> Never {
     guard #available(macOS 12.0, *) else {
         FileHandle.standardError.write(Data("asctl gui requires macOS 12 or later.\n".utf8))
         exit(1)
@@ -235,8 +288,12 @@ func runGUI() -> Never {
     if handOverToRunningInstance() { exit(0) }
 
     let app = NSApplication.shared
-    app.setActivationPolicy(.regular)
-    let delegate = GUIAppDelegate()
+    // Accessory means menu bar only: no Dock icon, no window, nothing taking
+    // focus. Opening at login should not interrupt whatever someone is doing,
+    // and a config tool for a mouse has no business being the front app every
+    // time the machine starts.
+    app.setActivationPolicy(background ? .accessory : .regular)
+    let delegate = GUIAppDelegate(background: background)
     app.delegate = delegate
     // After the delegate exists — the Settings item targets it.
     installMenuBar()

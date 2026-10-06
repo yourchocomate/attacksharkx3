@@ -14,7 +14,9 @@ USAGE
   asctl <command> [options]
 
 COMMANDS
-  gui                      Open the graphical interface
+  gui [--background]       Open the graphical interface. --background starts it
+                           in the menu bar with no window and no Dock icon,
+                           which is how the login item launches it.
   selftest                 Verify generated payloads against the protocol (no hardware)
   power-test <what>        Measure whether report 0x05's timings do anything.
                              debounce [seconds]  A/B the key debounce floor by
@@ -1597,13 +1599,25 @@ func commandWatch(_ options: Options) {
 /// not treated as the bundle's main executable — macOS then never reads
 /// Contents/Info.plist, so the Bluetooth usage description went unseen and TCC
 /// terminated the app the moment it used CoreBluetooth.
-func launchedAsBundledApp() -> Bool {
-    guard CommandLine.arguments.count == 1 else { return false }
-    return Bundle.main.bundleURL.pathExtension == "app"
+/// Whether this is the bundle being opened, and whether it was started by the
+/// login item rather than by a person.
+///
+/// The login item passes `--background`, which is the only argument a bundled
+/// launch accepts. Anything else means someone ran the executable directly with
+/// a CLI command, and that should behave as the CLI.
+func launchedAsBundledApp() -> (bundle: Bool, background: Bool) {
+    let isBundle = Bundle.main.bundleURL.pathExtension == "app"
         || Bundle.main.bundleIdentifier == "io.github.yourchocomate.asctl"
+    guard isBundle else { return (false, false) }
+
+    let arguments = Array(CommandLine.arguments.dropFirst())
+    if arguments.isEmpty { return (true, false) }
+    if arguments == ["--background"] { return (true, true) }
+    return (false, false)
 }
 
-if launchedAsBundledApp() { runGUI() }
+let launch = launchedAsBundledApp()
+if launch.bundle { runGUI(background: launch.background) }
 
 let options = parseArguments(Array(CommandLine.arguments.dropFirst()))
 
@@ -1616,7 +1630,7 @@ case "set": commandSet(options)
 case "send": commandSend(options)
 case "pollrate": commandPollRate(options)
 case "dpi": commandDpi(options)
-case "gui": runGUI()
+case "gui": runGUI(background: CommandLine.arguments.contains("--background"))
 case "selftest": SelfTest.run()
 case "power-test":
     switch options.positionals[safe: 0]?.lowercased() {

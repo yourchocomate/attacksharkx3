@@ -1,46 +1,39 @@
 # Changelog
 
-## v0.1.4
-
-A small release: one correction to what the app tells you, with no change to
-what it does.
-
-### Changed
-
-- **No longer warns that updating costs you your permissions.** It does not.
-  Releases since v0.1.2 share a signing certificate, so the identity macOS
-  records stays the same between versions and Input Monitoring, Bluetooth and
-  Accessibility carry across — now confirmed on an update between two released
-  versions rather than only predicted. The warning after each update, the
-  release notes and the troubleshooting entry all said otherwise, which meant
-  being told to expect something that does not happen.
-
-  Still true, and still stated: a copy you build yourself is signed ad-hoc and
-  identified by its contents, so moving between your own build and a release
-  asks for them once.
-
 ## v0.1.3
 
 ### Added
 
 - **Opens at login into the menu bar.** Starting at login no longer puts a
-  window in front of whatever you were doing. The login item starts the app
-  with no window and no Dock icon; the listener, the DPI-stage and battery
-  readings and the wheel-direction fix all run as before. Opening it from the
-  menu bar gives you the window and a Dock icon, and closing it returns to the
-  menu bar. Launching the app yourself behaves exactly as it did.
+  window in front of whatever you were doing. The app comes up with no window
+  and no Dock icon, and everything still runs: the device listener, the
+  DPI-stage and battery readings, and the wheel-direction fix. Open it from
+  the menu bar when you want the window; closing that window returns it to the
+  menu bar. Launching the app yourself behaves exactly as before, window and
+  Dock icon included.
 
-  An existing login item is rewritten automatically on first run, so there is
-  nothing to toggle. The check also repairs one left pointing at a bundle that
-  has since moved.
+  An existing login item is updated automatically on first run, so there is
+  nothing to switch off and on again. The same check repairs one left pointing
+  at a copy of the app that has since moved.
 
 ### Fixed
 
-- **The menu bar showed nothing after a background start.** Not connected, DPI
-  unknown, no battery. Every startup action was tied to the main window
-  appearing, so with no window none of it ran — including the wheel-direction
-  fix, which is most of the reason to open at login. Startup now happens
-  independently of whether a window exists.
+- **The listener could settle on the wrong transport and stay there.** After a
+  cold boot the menu bar would show the mouse connected over Bluetooth while
+  the listener polled for a 2.4 GHz receiver that was never coming, so the DPI
+  stage and battery never updated — for as long as the machine stayed up. It
+  now checks which transport the listener is actually on, rather than assuming
+  the one chosen at startup was right, and moves it within a couple of seconds
+  of the mouse appearing.
+
+### Changed
+
+- **No longer warns that updating costs you your permissions.** It does not.
+  Releases share a signing certificate, so the identity macOS records stays the
+  same between versions and Input Monitoring, Bluetooth and Accessibility carry
+  across — confirmed on an update between two released versions. A copy you
+  build yourself is signed ad-hoc and identified by its contents, so moving
+  between your own build and a release still asks once.
 
 ## v0.1.2
 

@@ -451,6 +451,30 @@ final class AppState: ObservableObject {
         restartMonitor()
     }
 
+    private var hasStartedUp = false
+
+    /// Everything the app must do on launch, whether or not it has a window.
+    ///
+    /// This used to live in MainView.onAppear, which was fine while a window
+    /// was always created at startup. Starting in the menu bar broke it
+    /// silently: with no window there is no onAppear, so the listener never
+    /// started, the device watch never ran, and the wheel-direction fix never
+    /// came up — the very things that make opening at login worth doing.
+    ///
+    /// Idempotent, because the view still calls it when a window does appear
+    /// and the two paths overlap on a normal launch.
+    func startUp() {
+        guard !hasStartedUp else { return }
+        hasStartedUp = true
+        refreshDevices()
+        refreshProfiles()
+        restoreLastApplied()
+        startMonitor()
+        startDeviceWatch()
+        restoreScrollMode()
+        refreshLaunchAtLogin()
+    }
+
     func startMonitor() {
         guard !monitorRunning else { return }
         monitor.onEvent = { [weak self] event, raw in

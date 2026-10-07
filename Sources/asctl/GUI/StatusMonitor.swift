@@ -52,6 +52,12 @@ final class StatusMonitor {
     /// noticed it had been superseded.
     private var generation = 0
     private(set) var connected = false
+    /// The transport the running loop was started for, or nil when stopped.
+    ///
+    /// Published so the device watch can ask the question that matters — is
+    /// the listener on the link the mouse is actually using — rather than
+    /// inferring it from how many times it has polled.
+    private(set) var activeLink: GUITransport.Link?
     private let queue = DispatchQueue(label: "asctl.status", qos: .utility)
 
     /// Whether 2A19 has been read since the mouse last powered up.
@@ -69,12 +75,16 @@ final class StatusMonitor {
 
     func allowBatteryRead() { batteryCaptured = false }
 
-    func stop() { running = false }
+    func stop() {
+        running = false
+        activeLink = nil
+    }
 
 
     func start(link: GUITransport.Link) {
         guard !running else { return }
         running = true
+        activeLink = link
         generation += 1
         let mine = generation
         queue.async { [weak self] in

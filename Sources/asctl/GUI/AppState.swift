@@ -384,7 +384,7 @@ final class AppState: ObservableObject {
     /// to a device that had gone.
     private var deviceWatch: Timer?
     private var lastDeviceSignature = ""
-    private var hasPolledDevices = false
+
 
     func startDeviceWatch() {
         deviceWatch?.invalidate()
@@ -402,75 +402,53 @@ final class AppState: ObservableObject {
             .map { "\($0.vendorID):\($0.productID):\($0.transport):\($0.usage)" }
             .sorted().joined(separator: "|")
 
-        // Track "have we polled at all" separately from the signature.
+        if signature != lastDeviceSignature {
+            lastDeviceSignature = signature
+            // Always publish the device list. Every "is the mouse here"
+            // question in the UI reads it.
+            devices = found
+
+            if found.isEmpty {
+                note("mouse disconnected — check the 2.4G / OFF / BT slider underneath")
+                // The mouse leaving the list is the only evidence available
+                // that it has been switched off, and reading 2A19 is only safe
+                // once per power cycle, so this is the moment to re-allow it.
+                monitor.allowBatteryRead()
+                battery = nil
+                batterySeen = false
+                deviceActiveStage = nil
+                stopMonitor()
+                return
+            }
+            detectLink()
+        }
+
+        guard !devices.isEmpty else { return }
+
+        // Is the listener on the link the mouse is actually using?
         //
-        // These were conflated, and an empty signature means two different
-        // things: nothing polled yet, and polled but no mouse. Opening the app
-        // with the mouse switched off left the signature empty, so connecting
-        // it afterwards was misread as the first poll — which took an early
-        // return that skipped both the device list and the listener restart.
-        // That is the "connected it and the app still says not connected" bug.
-        let firstPoll = !hasPolledDevices
-        hasPolledDevices = true
+        // Checked on every poll, not only when the device list changes. At a
+        // cold boot refreshDevices runs before Bluetooth has enumerated the
+        // mouse, so the listener starts on the receiver by default; the poll
+        // that follows is where the mouse appears and the link becomes
+        // Bluetooth. That poll used to be skipped as "the first one", after
+        // which the signature never changed again and every later poll
+        // returned early — leaving the listener polling for a receiver that
+        // was never coming, for as long as the machine stayed up.
+        //
+        // Asking which link the listener is on needs no notion of which poll
+        // this is, and when the answer already agrees nothing restarts, which
+        // is what the first-poll skip was there to protect.
+        guard monitor.activeLink != link || !monitorRunning else { return }
+        // A restart is already scheduled; let it land rather than pushing it
+        // back by another delay on every poll.
+        guard !restartPending else { return }
 
-        guard signature != lastDeviceSignature else { return }
-
-        let wasConnected = !lastDeviceSignature.isEmpty
-        lastDeviceSignature = signature
-        // Always publish the device list, whatever else this poll decides.
-        // Every "is the mouse here" question in the UI reads it.
-        devices = found
-
-        if found.isEmpty {
-            note("mouse disconnected — check the 2.4G / OFF / BT slider underneath")
-            // The mouse leaving the device list is the only evidence available
-            // that it has been switched off. Reading 2A19 is only safe once per
-            // power cycle, so this is the moment to re-allow it.
-            monitor.allowBatteryRead()
-            battery = nil
-            batterySeen = false
-            deviceActiveStage = nil
-            stopMonitor()
-            return
-        }
-
-        let previous = link
-        detectLink()
-        // The first poll needs no restart: MainView.onAppear has just called
-        // startMonitor, and restarting it queues a second loop behind the one
-        // still spinning on the serial queue.
-        if firstPoll { return }
-        if !wasConnected || link != previous {
-            note("connection changed — restarting the listener on \(link.rawValue)")
-            deviceActiveStage = nil
-            battery = nil
-            restartMonitor()
-        }
-    }
-
-    private var hasStartedUp = false
-
-    /// Everything the app must do on launch, whether or not it has a window.
-    ///
-    /// This used to live in MainView.onAppear, which was fine while a window
-    /// was always created at startup. Starting in the menu bar broke it
-    /// silently: with no window there is no onAppear, so the listener never
-    /// started, the device watch never ran, and the wheel-direction fix never
-    /// came up — the very things that make opening at login worth doing. The
-    /// menu bar sat there reporting "not connected" and was telling the truth.
-    ///
-    /// Idempotent, because the view still calls it when a window does appear
-    /// and the two paths overlap on a normal launch.
-    func startUp() {
-        guard !hasStartedUp else { return }
-        hasStartedUp = true
-        refreshDevices()
-        refreshProfiles()
-        restoreLastApplied()
-        startMonitor()
-        startDeviceWatch()
-        restoreScrollMode()
-        refreshLaunchAtLogin()
+        note("listener is on \(monitor.activeLink?.rawValue ?? "nothing") but the "
+            + "mouse is on \(link.rawValue) — restarting")
+        deviceActiveStage = nil
+        battery = nil
+        restartMonitor()
     }
 
     func startMonitor() {
@@ -592,6 +570,7 @@ final class AppState: ObservableObject {
     /// shape as the pile-up that used to wedge the listener. Cancel any pending
     /// start so the last request wins and only one survives.
     private var pendingRestart: DispatchWorkItem?
+    var restartPending: Bool { pendingRestart != nil }
 
     func restartMonitor() {
         pendingRestart?.cancel()
